@@ -48,7 +48,7 @@ func leerArchivo(nomArchivo string){
 }
 
 func modiArArchivo(nomArchivo string){
-	nuevoUsuario := "\nandres:0a92efb1b91ac02c858ab205fbb6baf44d67e8d1e625600a11020cfae50065da"
+	//nuevoUsuario := "\nandres:0a92efb1b91ac02c858ab205fbb6baf44d67e8d1e625600a11020cfae50065da"
 	archivo, _ := os.OpenFile(nomArchivo, os.O_APPEND|os.O_WRONLY, 0777)
 	archivo.WriteString(nuevoUsuario)
 	archivo.Close()
