@@ -1,4 +1,3 @@
-// basicamente es un servidor que escucha en el puerto 2710 y cuando un cliente se conecta, lee lo que el cliente envia y lo devuelve con un prefijo "ECO|". Si el cliente se desconecta, el servidor imprime un mensaje y termina la conexion.
 package main
 
 import (
@@ -6,18 +5,21 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 )
 
+const maxIntentos = 3 // luego vendrá del .conf
+
 func main() {
-	oyente, err := net.Listen("tcp", ":2710") //reserva el puerto y espera a un oyente
+	oyente, err := net.Listen("tcp", ":2710")
 	if err != nil {
-		fmt.Println("Error al abrir el puerto:", err) //nil es sin error osea si no hay espacio lo muestra y chao
+		fmt.Println("Error al abrir el puerto:", err)
 		return
 	}
-	defer oyente.Close() //cerrar el puerto al final del programa
+	defer oyente.Close()
 	fmt.Println("Esperando conexiones...")
 
-	conn, err := oyente.Accept() //espera conexion y cuando ya, devuelve conn, osea la conexion del cliente, y ahi se lee y escribe
+	conn, err := oyente.Accept()
 	if err != nil {
 		fmt.Println("Error al aceptar:", err)
 		return
@@ -25,15 +27,39 @@ func main() {
 	defer conn.Close()
 	fmt.Println("Cliente conectado:", conn.RemoteAddr())
 
-	lector := bufio.NewReader(conn) //lee lo que manda el cliente
-	for {
-		linea, err := lector.ReadString('\n') //lee hasta que haya un salto de linea
+	lector := bufio.NewReader(conn)
+
+	// --- autenticación ---
+	for intentos := 1; ; intentos++ {
+		linea, err := lector.ReadString('\n')
 		if err != nil {
 			fmt.Println("Cliente desconectado")
 			return
 		}
-		linea = strings.TrimSpace(linea) //elimina el salto de linea
+		partes := strings.SplitN(strings.TrimSpace(linea), "|", 3)
+		if len(partes) == 3 && partes[0] == "AUTH" && validarUsuario(partes[1], partes[2]) {
+			fmt.Println("Usuario autenticado:", partes[1])
+			fmt.Fprintf(conn, "AUTH|OK\n")
+			break
+		}
+		fmt.Println("Login incorrecto, intento", intentos)
+		if intentos == maxIntentos {
+			fmt.Fprintf(conn, "AUTH|BLOQUEADO\n")
+			return
+		}
+		fmt.Fprintf(conn, "AUTH|ERROR|intento %d de %d\n", intentos, maxIntentos)
+		time.Sleep(time.Duration(intentos) * 500 * time.Millisecond)
+	}
+
+	// --- sesión (por ahora eco; en el paso 3 será ejecución de comandos) ---
+	for {
+		linea, err := lector.ReadString('\n')
+		if err != nil {
+			fmt.Println("Cliente desconectado")
+			return
+		}
+		linea = strings.TrimSpace(linea)
 		fmt.Println("Recibido:", linea)
-		fmt.Fprintf(conn, "ECO|%s\n", linea) //envia de vuelta al cliente lo que recibio
+		fmt.Fprintf(conn, "ECO|%s\n", linea)
 	}
 }

@@ -6,15 +6,17 @@ import (
 	"net"
 	"os"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 func main() {
-	if len(os.Args) != 3 { //[1] = IP, [2] = Puerto, esperamos 3 argumentos
+	if len(os.Args) != 3 {
 		fmt.Println("Uso: cliente <IP> <Puerto>")
 		return
 	}
 
-	conn, err := net.Dial("tcp", os.Args[1]+":"+os.Args[2]) //une ip y puerto ip:puerto, abre conexion
+	conn, err := net.Dial("tcp", os.Args[1]+":"+os.Args[2])
 	if err != nil {
 		fmt.Println("No se pudo conectar:", err)
 		return
@@ -22,11 +24,44 @@ func main() {
 	defer conn.Close()
 	fmt.Println("Conectado a", conn.RemoteAddr())
 
-	// Goroutine 1: escucha lo que llega del servidor
+	servidor := bufio.NewReader(conn)
+	teclado := bufio.NewReader(os.Stdin)
+
+	// --- autenticación ---
+	fmt.Print("Usuario: ")
+	usuario, _ := teclado.ReadString('\n')
+	usuario = strings.TrimSpace(usuario)
+
+	autenticado := false
+	for !autenticado {
+		fmt.Print("Password: ")
+		pass, _ := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+
+		fmt.Fprintf(conn, "AUTH|%s|%s\n", usuario, string(pass))
+
+		resp, err := servidor.ReadString('\n')
+		if err != nil {
+			fmt.Println("Conexión cerrada por el servidor")
+			return
+		}
+		resp = strings.TrimSpace(resp)
+		switch {
+		case resp == "AUTH|OK":
+			fmt.Println("**** login CORRECTO ****")
+			autenticado = true
+		case resp == "AUTH|BLOQUEADO":
+			fmt.Println("Demasiados intentos fallidos. Conexión cerrada.")
+			return
+		default:
+			fmt.Println("!!!! login INCORRECTO:", resp)
+		}
+	}
+
+	// Goroutine: escucha lo que llega del servidor
 	go func() {
-		lector := bufio.NewReader(conn) //lee lo que manda el servidor
 		for {
-			linea, err := lector.ReadString('\n')
+			linea, err := servidor.ReadString('\n')
 			if err != nil {
 				fmt.Println("Conexión cerrada por el servidor")
 				os.Exit(0)
@@ -35,16 +70,13 @@ func main() {
 		}
 	}()
 
-	// Goroutine principal: lee el teclado y envía
-	teclado := bufio.NewReader(os.Stdin) //lee lo que escribe el usuario
+	// Goroutine principal: teclado -> servidor
 	for {
 		texto, _ := teclado.ReadString('\n')
-		texto = strings.TrimSpace(texto) //elimina el salto de linea
+		texto = strings.TrimSpace(texto)
 		if texto == "bye" {
 			return
 		}
-		fmt.Fprintf(conn, "%s\n", texto) //envia al servidor lo que escribio el usuario
+		fmt.Fprintf(conn, "%s\n", texto)
 	}
 }
-
-//los dos goroutines corren en paralelo, uno escucha lo que llega del servidor y el otro lee lo que escribe el usuario y lo envia al servidor.
