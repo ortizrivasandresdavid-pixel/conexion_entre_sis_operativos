@@ -51,15 +51,19 @@ func main() {
 		time.Sleep(time.Duration(intentos) * 500 * time.Millisecond)
 	}
 
-	// --- sesión (por ahora eco; en el paso 3 será ejecución de comandos) ---
+	// --- sesión: ejecución remota de comandos ---
 	for {
 		linea, err := lector.ReadString('\n')
 		if err != nil {
 			fmt.Println("Cliente desconectado")
 			return
 		}
-		linea = strings.TrimSpace(linea)
-		fmt.Println("Recibido:", linea)
-		fmt.Fprintf(conn, "ECO|%s\n", linea)
+		comando := strings.TrimSpace(linea)
+		if comando == "" {
+			fmt.Fprintf(conn, "FIN|\n")
+			continue
+		}
+		fmt.Println("Ejecutando:", comando)
+		ejecutarComando(conn, comando)
 	}
 }

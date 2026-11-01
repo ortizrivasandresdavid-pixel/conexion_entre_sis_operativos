@@ -66,7 +66,11 @@ func main() {
 				fmt.Println("Conexión cerrada por el servidor")
 				os.Exit(0)
 			}
-			fmt.Print("<< ", linea)
+			linea = strings.TrimRight(linea, "\r\n")
+			if strings.HasPrefix(linea, "RESP|") {
+				fmt.Println(strings.TrimPrefix(linea, "RESP|"))
+			}
+			// "FIN|" marca el final de la respuesta; por ahora no se muestra
 		}
 	}()
 
