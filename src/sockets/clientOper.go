@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	
+
 )
 
 func main() {
@@ -14,14 +16,36 @@ func main() {
 
 	IPserver := os.Args[1]
 	dirserverTCP, _ := net.ResolveTCPAddr("tcp4", IPserver+":2710")
-	SocketC, _ := net.DialTCP("tcp", nil, dirserverTCP)
+	
+	var socketC net.Conn
+	socketC, _ = net.DialTCP("tcp", nil, dirserverTCP)
+	fmt.Println("Cliente conectado ", socketC.RemoteAddr())
+
+	for{
+		envMensajeC(&socketC)
+		recMensajeC(&socketC)
+	}
+	socketC.Close()
+}
 
 
-	fmt.Println("Cliente conectado : ", SocketC.RemoteAddr())
+func recMensajeC(socketC *net.Conn){
+	bufferC := bufio.NewReader(*socketC)
+	msjRec, _ := bufferC.ReadString('\n')
+	fmt.Println("Reporte recibido...", msjRec)
+	fmt.Println("==================================\n")
+}
+   
+func envMensajeC(socketC *net.Conn){
 
-	bufferC := bufio.NewWriter(SocketC)
-	bufferC.WriteString("ls -l desde aortiz...\n")
+	fmt.Print("Digite el comando a enviar: ")
+    //fmt.Scanf("%s",&comando);
+    lector :=bufio.NewReader(os.Stdin)
+	comando, _ := lector.ReadString('\n')
+	//comando = strings.TrimRight(comando, "\n")
+
+	bufferC := bufio.NewWriter(*socketC)
+	bufferC.WriteString(comando)
 	bufferC.Flush()
 	fmt.Println("Comando enviado...")
-	
 }

@@ -3,6 +3,7 @@ import (
 	"fmt"
 	"net"
 	"bufio"
+	"time"
 
 )
 func main() {
@@ -14,11 +15,29 @@ func main() {
 	oyente, _ := net.ListenTCP("tcp", dirTCP)
 	fmt.Println("Esperando Conexiones...")
 
-	socketS, _ :=oyente.Accept()
+	var socketS net.Conn
+	socketS, _ =oyente.Accept()
 	fmt.Println("Cliente conectado", socketS.RemoteAddr())
 
-	bufferC := bufio.NewReader(socketS)
+	for{
+		envMensajeS(&socketS)
+		recMensajeS(&socketS)
+	}
+	socketS.Close()
+}
+
+func recMensajeS(socketS *net.Conn){
+	bufferC := bufio.NewReader(*socketS)
 	msgRec, _ := bufferC.ReadString('\n')
 	fmt.Println("Comando recibido...", msgRec)
-	socketS.Close()
+
+}
+
+func envMensajeS(socketS *net.Conn){
+	time.Sleep(5 * time.Second)
+	bufferC := bufio.NewWriter(*socketS)
+	bufferC.WriteString("REPORTE [DD:17%   - CPU:9%  - RAM:34%]\n")
+	bufferC.Flush()
+	fmt.Println("Reporte enviado...")
+	fmt.Println("===========================\n")
 }
