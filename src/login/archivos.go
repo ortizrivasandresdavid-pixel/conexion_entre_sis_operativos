@@ -1,55 +1,47 @@
-package main
+package login
 
 import (
+	"bufio"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
-
-
-
 )
-func main() {
-	nomArchivo := "oper.user.db"
-	//falta colcar un switch case para ejecutar las funciones
-	fmt.Print("ACHIVOs OPER\n1.crear\n2.leer\n3.modificar\nDigite opcion : ")
-	var opcion int
-	fmt.Scan(&opcion)
-	switch opcion {
-	case 1:
-		crearArchivo(nomArchivo)
-	case 2:
-		leerArchivo(nomArchivo)
-	case 3:
-		modiArArchivo(nomArchivo)
-	default:
-		fmt.Println("opcion inválida")
+
+func LoadUsers(path string) (map[string]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("abrir archivo de usuarios: %w", err)
 	}
-	//crearArchivo(nomArchivo)
-	//leerArchivo(nomArchivo)
-	//modiArArchivo(nomArchivo)
+	defer file.Close()
+
+	users := make(map[string]string)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1024), 64*1024)
+	for lineNumber := 1; scanner.Scan(); lineNumber++ {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		username, passwordHash, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(username) != username ||
+			username == "" || len(passwordHash) != 64 {
+			return nil, fmt.Errorf("formato inválido en %s:%d", path, lineNumber)
+		}
+		if _, err := hex.DecodeString(passwordHash); err != nil {
+			return nil, fmt.Errorf("hash SHA-256 inválido en %s:%d", path, lineNumber)
+		}
+		if _, exists := users[username]; exists {
+			return nil, fmt.Errorf("usuario duplicado %q en %s:%d", username, path, lineNumber)
+		}
+		users[username] = strings.ToLower(passwordHash)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("leer archivo de usuarios: %w", err)
+	}
+	if len(users) == 0 {
+		return nil, fmt.Errorf("el archivo de usuarios %s no contiene usuarios", path)
+	}
+	return users, nil
 }
-
-func crearArchivo(nomArchivo string) {
-	credUsuario := "Aortiz:caf90169eefa5f807d577486b9f795ab86ae2983c5c20806cff959117e90af18"
-	os.WriteFile(nomArchivo, []byte(credUsuario), 0777)
-}
-
-func leerArchivo(nomArchivo string){
-	archivo, _ := os.ReadFile(nomArchivo)
-	strArchivo := string(archivo)
-	//fmt.Println(strArchivo)
-	usuarios := strings.Split(strArchivo, "\n")
-	for i := 0; i < len(usuarios); i++ {
-        fmt.Println("Usuario[",i, "] = ", usuarios[i])
-    }
-
-	
-
-}
-
-func modiArArchivo(nomArchivo string){
-	//nuevoUsuario := "\nandres:0a92efb1b91ac02c858ab205fbb6baf44d67e8d1e625600a11020cfae50065da"
-	archivo, _ := os.OpenFile(nomArchivo, os.O_APPEND|os.O_WRONLY, 0777)
-	archivo.WriteString(nuevoUsuario)
-	archivo.Close()
-} 
