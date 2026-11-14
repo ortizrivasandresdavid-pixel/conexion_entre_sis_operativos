@@ -1,91 +1,169 @@
-# Comunicación entre terminales en Go
+# Administración y monitorización de laboratorio en Go
 
-Prototipo educativo en Go para explorar la comunicación entre dos equipos mediante sockets TCP. La idea es enviar desde un equipo una instrucción destinada a otro sistema operativo y observar el intercambio entre cliente y servidor.
+Ejemplo educativo de cliente Windows y servidor Debian/Linux mediante TCP. El cliente autentica al usuario, solicita diagnósticos permitidos y muestra métricas periódicas sin detener la entrada interactiva.
 
-> **Estado actual:** el cliente envía una línea de texto por TCP y el servidor la recibe y la muestra en pantalla. El servidor todavía **no ejecuta** el comando recibido ni devuelve el resultado. El programa de `shell.go` ejecuta comandos localmente y no está conectado al cliente ni al servidor.
+## Alcance y seguridad
 
-## Objetivo
-
-El proyecto reúne ejemplos iniciales relacionados con sistemas operativos y comunicación entre procesos:
-
-- Establecer una conexión TCP entre un cliente y un servidor.
-- Enviar y recibir texto a través de la conexión.
-- Leer comandos desde una terminal y ejecutarlos localmente con Bash.
-- Probar, por separado, un inicio de sesión sencillo con contraseña.
-
-La intención es servir como punto de partida para estudiar cómo diseñar una solución de administración remota entre sistemas. No es todavía una herramienta de ejecución remota completa.
-
-## Estructura
+Por seguridad, el servidor **no ejecuta órdenes arbitrarias ni usa `bash -c`**. Los únicos diagnósticos remotos permitidos son:
 
 ```text
-.
-├── src/
-│   ├── shell.go                 # Lee y ejecuta comandos en la máquina local
-│   ├── saludo.go                # Ejemplo sencillo de entrada y salida
-│   ├── sockets/
-│   │   ├── serverOper.go        # Escucha una conexión TCP y muestra el texto recibido
-│   │   └── clientOper.go        # Se conecta al servidor y envía un texto fijo
-│   └── login/
-│       ├── go.mod               # Módulo independiente para ejemplos de inicio de sesión
-│       ├── login.go
-│       └── archivos.go
-└── README.md
+date
+df -h
+free -h
+ps -eo pid,comm,%cpu,%mem --sort=-%cpu
+pwd
+uname -a
+uptime
+whoami
+help
+bye
 ```
 
-Los programas de `src/` son ejemplos separados y tienen sus propias funciones `main`; por eso se ejecutan individualmente, no como un único programa.
+Los comandos se ejecutan sin shell y sin argumentos proporcionados por el cliente. `help` lista las opciones y `bye` cierra la sesión. `src/shell.go` reutiliza el mismo allowlist para el ejemplo de consola local.
+
+La autenticación usa un desafío aleatorio por intento y una prueba basada en SHA-256; la contraseña no se envía en claro. El máximo de intentos se aplica a cada conexión TCP. **La conexión TCP de esta aplicación no está cifrada**: las órdenes, sus salidas y métricas pueden ser observadas si el tráfico sale de una red confiable. Para conectar desde otras redes, usa una VPN privada entre servidor y clientes; no publiques ni redirijas el puerto TCP de la aplicación directamente a Internet.
+
+El servidor verifica la IP o CIDR autorizada y limita los intentos fallidos y el período de reporte. Admite hasta 32 conexiones simultáneas. El cliente no se reconecta automáticamente; para iniciar una nueva sesión, vuelve a ejecutarlo y autentícate de nuevo.
 
 ## Requisitos
 
-- Go instalado.
-- Linux o un entorno con Bash para ejecutar `shell.go`.
-- Para probar cliente y servidor en equipos distintos, conectividad de red entre ellos y acceso al puerto TCP `2710`.
+- Go 1.27.3 o posterior.
+- Servidor Debian/Linux (la recolección de CPU, procesos, memoria y disco usa `/proc` y `statfs`).
+- Cliente Windows con acceso TCP al servidor.
+- Puerto TCP 2306 permitido en el firewall entre ambos equipos.
 
-## Probar cliente y servidor
+## Archivos de configuración de ejemplo
 
-1. En `src/sockets/serverOper.go`, configura la dirección IP del equipo que actuará como servidor. Actualmente el programa intenta escuchar en `10.1.15.66:2710`; esa dirección debe existir en el equipo servidor.
-2. En la terminal del equipo servidor, desde la raíz del repositorio, inicia el servidor:
+`servidor/server.conf` contiene:
 
-   ```bash
-   go run ./src/sockets/serverOper.go
-   ```
+```ini
+ListenIP=0.0.0.0
+Port=2306
+AllowedClientIP=127.0.0.1
+MaxAuthAttempts=3
+UsersFile=users.conf
+DefaultReportPeriodSeconds=5
+MaxReportPeriodSeconds=60
+```
 
-3. En otra terminal, en el equipo cliente, pasa al programa la dirección IP del servidor:
+Para acceso por VPN, cambia `AllowedClientIP` por la IP VPN de un cliente o por la subred privada asignada a los clientes autorizados. `ListenIP` es la IP local del servidor; `0.0.0.0` escucha en todas sus interfaces, así que restringe el puerto 2306 con el firewall para permitirlo solo desde la interfaz o subred VPN.
 
-   ```bash
-   go run ./src/sockets/clientOper.go 10.1.15.66
-   ```
+`servidor/users.conf` trae una cuenta de laboratorio:
 
-   Sustituye `10.1.15.66` por la dirección configurada en el servidor.
+```text
+Usuario: admin
+Password: linux
+```
 
-El cliente envía actualmente el texto fijo `ls -l desde aortiz...`. El servidor lo muestra como texto recibido y cierra la conexión. No se envía una respuesta al cliente.
+El archivo almacena `usuario:SHA256(password)`, no la contraseña. Genera hashes para otras cuentas con:
 
-## Ejecutar el ejemplo de shell local
+```bash
+printf %s 'TuPassword' | sha256sum
+```
 
-Para iniciar el lector de comandos local:
+Agrega una línea `usuario:hash_de_64_caracteres` a `users.conf`. No reutilices la cuenta ni la contraseña de ejemplo.
+
+## Ejecutar en Debian (servidor)
+
+Desde la raíz del proyecto:
+
+```bash
+go build -o servidor ./servidor
+./servidor -config servidor/server.conf
+```
+
+También se puede iniciar directamente:
+
+```bash
+go run ./servidor -config servidor/server.conf
+```
+
+El servidor escucha en `ListenIP:Port`. Para detenerlo, usa `Ctrl+C`.
+
+## Usar la interfaz del cliente (consola interactiva)
+
+El proyecto no incluye una interfaz gráfica. La interfaz disponible es la consola de Windows: desde allí se inicia la conexión, se ingresan las credenciales, se escriben los diagnósticos y se reciben las métricas.
+
+### 1. Preparar el servidor
+
+Para conectar clientes desde distintas redes físicas, primero instala y configura una VPN privada (por ejemplo, WireGuard o Tailscale) en Debian y en cada Windows. Asegúrate de que ambos estén conectados a la misma VPN y que Windows tenga una ruta hacia la IP VPN de Debian. La VPN proporciona el acceso cifrado entre redes; esta aplicación no lo hace por sí sola.
+
+En `servidor/server.conf`, configura `AllowedClientIP` con la IP VPN del cliente o con la subred VPN que quieras autorizar. `127.0.0.1` solo sirve cuando cliente y servidor se ejecutan en el mismo equipo. Mantén `ListenIP=0.0.0.0` o usa la IP VPN estable del servidor. Configura el firewall de Debian para permitir TCP 2306 solo desde la VPN; no redirijas ese puerto en el router hacia Internet. La VPN debe estar conectada antes de probar la aplicación.
+
+Inicia el servidor desde la raíz del proyecto:
+
+```bash
+go run ./servidor -config servidor/server.conf
+```
+
+Déjalo ejecutándose mientras uses el cliente. Si cambias `UsersFile`, recuerda que su ruta relativa se resuelve respecto de la carpeta `servidor`.
+
+### 2. Iniciar el cliente en Windows
+
+Abre PowerShell en la raíz del proyecto y compila el cliente:
+
+```powershell
+go build -o cliente.exe .\cliente
+```
+
+Ejecuta el cliente con la IP VPN del servidor:
+
+```powershell
+.\cliente.exe 10.8.0.1
+```
+
+Reemplaza `10.8.0.1` por la IP VPN real de Debian. Al indicar solo la IP, el cliente usa el puerto 2306 y recibe métricas cada 5 segundos. Si necesitas otros valores, puedes indicarlos opcionalmente: `.\cliente.exe <IP-VPN-servidor> <puerto> <periodo-segundos>`. El período debe ser de 1 a 3600 segundos y no puede superar `MaxReportPeriodSeconds` del servidor.
+
+### 3. Autenticarse y usar la consola
+
+El cliente solicita las credenciales en este orden:
+
+```text
+Usuario: admin
+Password:
+```
+
+Escribe la contraseña y presiona Enter; no se mostrará mientras la escribes. Para probar en un laboratorio recién clonado, el archivo de ejemplo incluye `admin` / `linux`. Cambia esa cuenta antes de usarlo fuera de una práctica local.
+
+Después de autenticarte, puedes escribir `help` para ver la lista de diagnósticos admitidos. Por ejemplo:
+
+```text
+Autenticación correcta. Escribe help para ver los diagnósticos permitidos; bye para salir.
+Recibirás métricas cada 5 segundos.
+help
+Comandos permitidos: date, df -h, free -h, ps -eo pid,comm,%cpu,%mem --sort=-%cpu, pwd, uname -a, uptime, whoami
+df -h
+```
+
+Los comandos se ejecutan en Debian, no en Windows. Escribe el comando completo tal como aparece en `help`; no se admiten comandos arbitrarios, tuberías ni argumentos distintos. El cliente muestra las métricas periódicas en la misma consola, incluso mientras escribes. Para cerrar la sesión de forma normal, escribe `bye`.
+
+Si la conexión se interrumpe, confirma que la VPN esté conectada en ambos equipos y revisa la IP VPN, el puerto, el firewall y `AllowedClientIP`; luego vuelve a iniciar el cliente. Un error de autenticación permite reintentar hasta alcanzar `MaxAuthAttempts`.
+
+### Problemas frecuentes
+
+- **No se puede conectar:** verifica que la VPN esté activa en ambos equipos, que haya una ruta entre sus IP VPN, que el servidor esté ejecutándose y que el firewall permita TCP 2306 desde la VPN.
+- **IP no autorizada:** `AllowedClientIP` debe coincidir con la IP VPN del cliente (o con la subred VPN que la incluya).
+- **Credenciales incorrectas:** comprueba el usuario y el hash de contraseña en el archivo indicado por `UsersFile`.
+- **Comando no permitido:** ejecuta `help` y copia uno de los diagnósticos listados; no agregues argumentos.
+
+Para compilar el ejecutable de Windows desde Debian, si lo necesitas:
+
+```bash
+GOOS=windows GOARCH=amd64 go build -o cliente.exe ./cliente
+```
+
+## Ejecutar el shell de diagnóstico local
+
+En Linux, desde la raíz:
 
 ```bash
 go run ./src/shell.go
 ```
 
-El programa ejecuta lo que se escriba mediante `bash -c` en **la misma máquina** donde se está ejecutando. Escribe `exit` para salir. Este ejemplo no recibe comandos por la red y no forma parte del flujo TCP.
+Escribe `help` para ver los diagnósticos permitidos y `exit` o `bye` para salir. El shell local tampoco ejecuta órdenes fuera de la lista.
 
-## Ejemplo de inicio de sesión
-
-El código de `src/login/` es un módulo Go separado. Para probar el ejemplo de contraseña, entra en ese directorio y ejecútalo:
+## Pruebas
 
 ```bash
-cd src/login
-go run login.go
+go test ./cliente ./servidor ./src/login ./src/metrics ./src/shell ./src/sockets
 ```
-
-El módulo puede necesitar descargar las dependencias Go declaradas en `go.mod`. Este ejemplo no está integrado con los programas de sockets.
-
-## Limitaciones y seguridad
-
-- La comunicación actual no tiene cifrado ni autenticación entre cliente y servidor.
-- El cliente envía un texto fijo; no permite introducir comandos de forma interactiva.
-- El servidor solo recibe e imprime ese texto. No lo ejecuta ni devuelve resultados.
-- `shell.go` ejecuta comandos locales con Bash. No expongas ese comportamiento a una red ni conectes la recepción de comandos con su ejecución sin diseñar controles de acceso, validación, autorización y transporte seguro.
-- El servidor usa una dirección IP fija en el código y acepta una sola conexión antes de finalizar.
-
-Por estas razones, el proyecto debe usarse únicamente en un entorno de laboratorio controlado. No debe considerarse un sistema seguro de administración remota.

@@ -1,42 +1,32 @@
-package main
+package login
 
 import (
 	"crypto/sha256"
-	"fmt"
-	"os"
-	"time"
-
-	"golang.org/x/term"
+	"crypto/subtle"
+	"encoding/hex"
+	"strings"
 )
 
-func main() {
-	// password encriptada
-	const hspasswd string ="caf90169eefa5f807d577486b9f795ab86ae2983c5c20806cff959117e90af18"
-	// password: linux
-	// reducir el tiempo a medida que aumenta el numero de intentos
-	intentos :=1
-	for {
-		
+func HashPassword(password string) string {
+	sum := sha256.Sum256([]byte(password))
+	return hex.EncodeToString(sum[:])
+}
 
-		fmt.Print(fmt.Sprintf("[intento %d] digite el password:", intentos))
-		// var upasswd string 
-		// hacer que el password no se muestre en la pantalla
+func MakeProof(username, password, nonce string) string {
+	return makeProof(username, HashPassword(password), nonce)
+}
 
-		upasswd, _:= term.ReadPassword(int(os.Stdin.Fd()))
-		// encriptar password ingresado
-		hupasswd := sha256.Sum256([]byte(upasswd))
-		//fmt.Println("hupasswd: %x \n", hupasswd)
-		shupasswd := fmt.Sprintf("%x", hupasswd)
-		
-		if shupasswd == hspasswd {
-			fmt.Println("\n**** login CORRECTO ****")
-			break;
-		}
-		
-		fmt.Println("\n!!!! login INCORRECTO ¡¡¡¡")
-		intentos++
-		time.Sleep(time.Duration(intentos) * 500 * time.Millisecond)
-			
+func VerifyProof(users map[string]string, username, nonce, proof string) bool {
+	storedHash, ok := users[username]
+	if !ok || len(proof) != sha256.Size*2 {
+		return false
 	}
 
+	expected := makeProof(username, storedHash, nonce)
+	return subtle.ConstantTimeCompare([]byte(strings.ToLower(proof)), []byte(expected)) == 1
+}
+
+func makeProof(username, passwordHash, nonce string) string {
+	sum := sha256.Sum256([]byte(username + ":" + passwordHash + ":" + nonce))
+	return hex.EncodeToString(sum[:])
 }
