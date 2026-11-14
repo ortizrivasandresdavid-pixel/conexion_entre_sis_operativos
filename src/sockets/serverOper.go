@@ -1,24 +1,316 @@
-package main
+package sockets
+
 import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
+	"log"
 	"net"
-	"bufio"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
+	"operativos/src/login"
+	"operativos/src/metrics"
+	"operativos/src/shell"
 )
-func main() {
-	fmt.Println("**********************************")
-	fmt.Println("*********  SERVER ANDRES  ********")
-	fmt.Println("**********************************")
 
-	dirTCP, _ := net.ResolveTCPAddr("tcp4", "10.1.15.66:2710")
-	oyente, _ := net.ListenTCP("tcp", dirTCP)
-	fmt.Println("Esperando Conexiones...")
+type ServerConfig struct {
+	ListenIP                   string
+	Port                       int
+	AllowedClientIP            string
+	MaxAuthAttempts            int
+	UsersFile                  string
+	DefaultReportPeriodSeconds int
+	MaxReportPeriodSeconds     int
+}
 
-	socketS, _ :=oyente.Accept()
-	fmt.Println("Cliente conectado", socketS.RemoteAddr())
+func RunServer(ctx context.Context, config ServerConfig) error {
+	if err := validateServerConfig(config); err != nil {
+		return err
+	}
+	users, err := login.LoadUsers(config.UsersFile)
+	if err != nil {
+		return err
+	}
 
-	bufferC := bufio.NewReader(socketS)
-	msgRec, _ := bufferC.ReadString('\n')
-	fmt.Println("Comando recibido...", msgRec)
-	socketS.Close()
+	listener, err := net.Listen("tcp", net.JoinHostPort(config.ListenIP, strconv.Itoa(config.Port)))
+	if err != nil {
+		return fmt.Errorf("abrir socket servidor: %w", err)
+	}
+	var handlers sync.WaitGroup
+	var activeConnections sync.Map
+	stopClose := context.AfterFunc(ctx, func() {
+		_ = listener.Close()
+		activeConnections.Range(func(key, _ any) bool {
+			_ = key.(net.Conn).Close()
+			return true
+		})
+	})
+	defer func() {
+		stopClose()
+		_ = listener.Close()
+		activeConnections.Range(func(key, _ any) bool {
+			_ = key.(net.Conn).Close()
+			return true
+		})
+		handlers.Wait()
+	}()
+
+	log.Printf("Servidor escuchando en %s; IP permitida: %s", listener.Addr(), config.AllowedClientIP)
+	slots := make(chan struct{}, 32)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("aceptar conexión: %w", err)
+		}
+		if ctx.Err() != nil {
+			_ = conn.Close()
+			continue
+		}
+		select {
+		case slots <- struct{}{}:
+			activeConnections.Store(conn, struct{}{})
+			handlers.Add(1)
+			go func() {
+				defer handlers.Done()
+				defer func() { <-slots }()
+				defer activeConnections.Delete(conn)
+				if err := serveConnection(ctx, conn, config, users); err != nil {
+					log.Printf("Conexión %s: %v", conn.RemoteAddr(), err)
+				}
+			}()
+		default:
+			_ = conn.Close()
+			log.Printf("Se rechazó %s: límite de conexiones alcanzado", conn.RemoteAddr())
+		}
+	}
+}
+
+func validateServerConfig(config ServerConfig) error {
+	if net.ParseIP(config.ListenIP) == nil {
+		return fmt.Errorf("ListenIP no es una dirección IP válida")
+	}
+	if config.Port < 1 || config.Port > 65535 {
+		return fmt.Errorf("Port debe estar entre 1 y 65535")
+	}
+	if config.MaxAuthAttempts < 1 {
+		return fmt.Errorf("MaxAuthAttempts debe ser mayor que cero")
+	}
+	if strings.TrimSpace(config.UsersFile) == "" {
+		return fmt.Errorf("UsersFile no puede estar vacío")
+	}
+	if config.DefaultReportPeriodSeconds < 1 ||
+		config.DefaultReportPeriodSeconds > config.MaxReportPeriodSeconds ||
+		config.MaxReportPeriodSeconds > 3600 {
+		return fmt.Errorf("períodos de reporte no válidos (rango permitido: 1..3600 segundos)")
+	}
+	if _, err := parseAllowedIP(config.AllowedClientIP); err != nil {
+		return err
+	}
+	return nil
+}
+
+func serveConnection(ctx context.Context, conn net.Conn, config ServerConfig, users map[string]string) error {
+	defer conn.Close()
+	allowed, err := parseAllowedIP(config.AllowedClientIP)
+	if err != nil {
+		return err
+	}
+	remoteIP, err := remoteIP(conn.RemoteAddr())
+	if err != nil {
+		return err
+	}
+	if !allowed(remoteIP) {
+		return fmt.Errorf("IP no autorizada: %s", remoteIP)
+	}
+
+	reader := newMessageReader(conn)
+	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return fmt.Errorf("configurar tiempo límite de autenticación: %w", err)
+	}
+	if err := authenticateServer(conn, reader, users, config.MaxAuthAttempts); err != nil {
+		return err
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("limpiar tiempo límite de conexión: %w", err)
+	}
+	log.Printf("Cliente autenticado: %s", remoteIP)
+	return runSession(ctx, conn, reader, config)
+}
+
+func authenticateServer(conn net.Conn, reader *messageReader, users map[string]string, maxAttempts int) error {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		nonceBytes := make([]byte, 32)
+		if _, err := rand.Read(nonceBytes); err != nil {
+			return fmt.Errorf("generar desafío de autenticación: %w", err)
+		}
+		nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
+		if err := writeMessage(conn, Message{Type: "auth_challenge", Nonce: nonce}); err != nil {
+			return err
+		}
+
+		request, err := reader.Read()
+		if err != nil {
+			return err
+		}
+		if request.Type != "authenticate" || request.Username == "" {
+			return fmt.Errorf("solicitud de autenticación inválida")
+		}
+		ok := login.VerifyProof(users, request.Username, nonce, request.Proof)
+		result := Message{
+			Type:              "auth_result",
+			OK:                ok,
+			AttemptsRemaining: maxAttempts - attempt,
+		}
+		if !ok {
+			result.Error = "credenciales incorrectas"
+		}
+		if err := writeMessage(conn, result); err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("se agotaron los intentos de autenticación")
+}
+
+type readEvent struct {
+	message Message
+	err     error
+}
+
+type commandResult struct {
+	id     uint64
+	output string
+	err    error
+}
+
+func runSession(ctx context.Context, conn net.Conn, reader *messageReader, config ServerConfig) error {
+	sessionCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	incoming := make(chan readEvent, 1)
+	go func() {
+		defer close(incoming)
+		for {
+			message, err := reader.Read()
+			select {
+			case incoming <- readEvent{message: message, err: err}:
+			case <-sessionCtx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	results := make(chan commandResult, 1)
+	collector := metrics.NewCollector()
+	period := time.Duration(config.DefaultReportPeriodSeconds) * time.Second
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+	commandRunning := false
+
+	for {
+		select {
+		case <-sessionCtx.Done():
+			return sessionCtx.Err()
+		case event, open := <-incoming:
+			if !open {
+				return nil
+			}
+			if event.err != nil {
+				if event.err == context.Canceled {
+					return nil
+				}
+				return event.err
+			}
+			switch event.message.Type {
+			case "set_period":
+				seconds := event.message.PeriodSeconds
+				if seconds < 1 || seconds > config.MaxReportPeriodSeconds {
+					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, Error: fmt.Sprintf("el período debe estar entre 1 y %d segundos", config.MaxReportPeriodSeconds)}); err != nil {
+						return err
+					}
+					continue
+				}
+				ticker.Reset(time.Duration(seconds) * time.Second)
+				if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, OK: true, Output: fmt.Sprintf("Período de reporte: %d segundos", seconds)}); err != nil {
+					return err
+				}
+			case "command":
+				if event.message.Command == "bye" {
+					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, OK: true, Output: "Sesión cerrada"}); err != nil {
+						return err
+					}
+					return nil
+				}
+				if commandRunning {
+					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, Error: "hay otro comando de diagnóstico en ejecución"}); err != nil {
+						return err
+					}
+					continue
+				}
+				commandRunning = true
+				go func(id uint64, command string) {
+					output, err := shell.Execute(sessionCtx, command)
+					select {
+					case results <- commandResult{id: id, output: output, err: err}:
+					case <-sessionCtx.Done():
+					}
+				}(event.message.ID, event.message.Command)
+			default:
+				if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, Error: "tipo de solicitud no reconocido"}); err != nil {
+					return err
+				}
+			}
+		case result := <-results:
+			commandRunning = false
+			response := Message{Type: "command_result", ID: result.id, OK: result.err == nil, Output: result.output}
+			if result.err != nil {
+				response.Error = result.err.Error()
+			}
+			if err := writeMessage(conn, response); err != nil {
+				return err
+			}
+		case <-ticker.C:
+			snapshot, err := collector.Snapshot()
+			if err != nil {
+				if writeErr := writeMessage(conn, Message{Type: "metric", Error: err.Error()}); writeErr != nil {
+					return writeErr
+				}
+				continue
+			}
+			if err := writeMessage(conn, Message{Type: "metric", Metrics: &snapshot}); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func parseAllowedIP(value string) (func(net.IP) bool, error) {
+	if ip := net.ParseIP(value); ip != nil {
+		return func(remote net.IP) bool { return remote.Equal(ip) }, nil
+	}
+	_, network, err := net.ParseCIDR(value)
+	if err != nil {
+		return nil, fmt.Errorf("AllowedClientIP debe ser una IP o una red CIDR válida")
+	}
+	return network.Contains, nil
+}
+
+func remoteIP(address net.Addr) (net.IP, error) {
+	tcpAddress, ok := address.(*net.TCPAddr)
+	if !ok {
+		return nil, fmt.Errorf("dirección remota no es TCP: %s", address)
+	}
+	return tcpAddress.IP, nil
 }
