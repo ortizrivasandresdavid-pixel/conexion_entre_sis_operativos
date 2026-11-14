@@ -21,9 +21,9 @@ bye
 
 Los comandos se ejecutan sin shell y sin argumentos proporcionados por el cliente. `help` lista las opciones y `bye` cierra la sesión. `src/shell.go` reutiliza el mismo allowlist para el ejemplo de consola local.
 
-La autenticación usa un desafío aleatorio por intento y una prueba basada en SHA-256; la contraseña no se envía en claro. El máximo de intentos se aplica a cada conexión TCP. **TCP no está cifrado**: las órdenes, sus salidas y métricas sí pueden ser observadas en la red. Usa únicamente una red aislada de laboratorio. No expongas el puerto a Internet; para administración real, utiliza SSH o un transporte TLS autenticado.
+La autenticación usa un desafío aleatorio por intento y una prueba basada en SHA-256; la contraseña no se envía en claro. El máximo de intentos se aplica a cada conexión TCP. **La conexión TCP de esta aplicación no está cifrada**: las órdenes, sus salidas y métricas pueden ser observadas si el tráfico sale de una red confiable. Para conectar desde otras redes, usa una VPN privada entre servidor y clientes; no publiques ni redirijas el puerto TCP de la aplicación directamente a Internet.
 
-El servidor verifica la IP o CIDR autorizada y limita los intentos fallidos y el período de reporte. El cliente no se reconecta automáticamente; para iniciar una nueva sesión, vuelve a ejecutarlo y autentícate de nuevo.
+El servidor verifica la IP o CIDR autorizada y limita los intentos fallidos y el período de reporte. Admite hasta 32 conexiones simultáneas. El cliente no se reconecta automáticamente; para iniciar una nueva sesión, vuelve a ejecutarlo y autentícate de nuevo.
 
 ## Requisitos
 
@@ -46,7 +46,7 @@ DefaultReportPeriodSeconds=5
 MaxReportPeriodSeconds=60
 ```
 
-`AllowedClientIP` debe cambiarse por la IP del cliente Windows (o una red CIDR controlada). `ListenIP` es la IP local del servidor; `0.0.0.0` escucha en todas sus interfaces, así que restringe el tráfico también con el firewall.
+Para acceso por VPN, cambia `AllowedClientIP` por la IP VPN de un cliente o por la subred privada asignada a los clientes autorizados. `ListenIP` es la IP local del servidor; `0.0.0.0` escucha en todas sus interfaces, así que restringe el puerto 2306 con el firewall para permitirlo solo desde la interfaz o subred VPN.
 
 `servidor/users.conf` trae una cuenta de laboratorio:
 
@@ -86,9 +86,9 @@ El proyecto no incluye una interfaz gráfica. La interfaz disponible es la conso
 
 ### 1. Preparar el servidor
 
-En `servidor/server.conf`, configura `AllowedClientIP` con la IP del equipo Windows tal como la ve el servidor Debian. `127.0.0.1` solo sirve si el cliente y el servidor se ejecutan en el mismo equipo. Puedes usar una dirección CIDR para autorizar una red controlada.
+Para conectar clientes desde distintas redes físicas, primero instala y configura una VPN privada (por ejemplo, WireGuard o Tailscale) en Debian y en cada Windows. Asegúrate de que ambos estén conectados a la misma VPN y que Windows tenga una ruta hacia la IP VPN de Debian. La VPN proporciona el acceso cifrado entre redes; esta aplicación no lo hace por sí sola.
 
-`ListenIP=0.0.0.0` permite escuchar en todas las interfaces del servidor; limita el puerto 2306 con el firewall para que solo sea accesible desde la red de laboratorio. Asegúrate también de que la IP de escucha corresponda a una interfaz disponible en Debian.
+En `servidor/server.conf`, configura `AllowedClientIP` con la IP VPN del cliente o con la subred VPN que quieras autorizar. `127.0.0.1` solo sirve cuando cliente y servidor se ejecutan en el mismo equipo. Mantén `ListenIP=0.0.0.0` o usa la IP VPN estable del servidor. Configura el firewall de Debian para permitir TCP 2306 solo desde la VPN; no redirijas ese puerto en el router hacia Internet. La VPN debe estar conectada antes de probar la aplicación.
 
 Inicia el servidor desde la raíz del proyecto:
 
@@ -106,13 +106,13 @@ Abre PowerShell en la raíz del proyecto y compila el cliente:
 go build -o cliente.exe .\cliente
 ```
 
-Ejecuta el cliente con la IP de Debian, el puerto y el intervalo de métricas (en segundos):
+Ejecuta el cliente con la IP VPN del servidor:
 
 ```powershell
-.\cliente.exe 10.1.10.3 2306 5
+.\cliente.exe 10.8.0.1
 ```
 
-Reemplaza `10.1.10.3` por la IP real del servidor. El intervalo debe ser de 1 a 3600 segundos y no puede superar `MaxReportPeriodSeconds` del servidor.
+Reemplaza `10.8.0.1` por la IP VPN real de Debian. Al indicar solo la IP, el cliente usa el puerto 2306 y recibe métricas cada 5 segundos. Si necesitas otros valores, puedes indicarlos opcionalmente: `.\cliente.exe <IP-VPN-servidor> <puerto> <periodo-segundos>`. El período debe ser de 1 a 3600 segundos y no puede superar `MaxReportPeriodSeconds` del servidor.
 
 ### 3. Autenticarse y usar la consola
 
@@ -137,12 +137,12 @@ df -h
 
 Los comandos se ejecutan en Debian, no en Windows. Escribe el comando completo tal como aparece en `help`; no se admiten comandos arbitrarios, tuberías ni argumentos distintos. El cliente muestra las métricas periódicas en la misma consola, incluso mientras escribes. Para cerrar la sesión de forma normal, escribe `bye`.
 
-Si la conexión se interrumpe, revisa la IP, el puerto, el firewall y `AllowedClientIP`; luego vuelve a iniciar el cliente. Un error de autenticación permite reintentar hasta alcanzar `MaxAuthAttempts`.
+Si la conexión se interrumpe, confirma que la VPN esté conectada en ambos equipos y revisa la IP VPN, el puerto, el firewall y `AllowedClientIP`; luego vuelve a iniciar el cliente. Un error de autenticación permite reintentar hasta alcanzar `MaxAuthAttempts`.
 
 ### Problemas frecuentes
 
-- **No se puede conectar:** verifica que el servidor esté ejecutándose y que el puerto TCP configurado esté permitido en el firewall.
-- **IP no autorizada:** `AllowedClientIP` debe coincidir con la IP de origen del cliente que recibe Debian (o con una red CIDR que la incluya).
+- **No se puede conectar:** verifica que la VPN esté activa en ambos equipos, que haya una ruta entre sus IP VPN, que el servidor esté ejecutándose y que el firewall permita TCP 2306 desde la VPN.
+- **IP no autorizada:** `AllowedClientIP` debe coincidir con la IP VPN del cliente (o con la subred VPN que la incluya).
 - **Credenciales incorrectas:** comprueba el usuario y el hash de contraseña en el archivo indicado por `UsersFile`.
 - **Comando no permitido:** ejecuta `help` y copia uno de los diagnósticos listados; no agregues argumentos.
 

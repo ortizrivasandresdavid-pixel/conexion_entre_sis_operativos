@@ -13,30 +13,45 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 4 {
-		fmt.Fprintln(os.Stderr, "Uso: cliente <IP-servidor> <puerto> <periodo-segundos>")
-		os.Exit(2)
-	}
-	if net.ParseIP(os.Args[1]) == nil {
-		fmt.Fprintln(os.Stderr, "La IP del servidor no es válida")
-		os.Exit(2)
-	}
-	port, err := strconv.Atoi(os.Args[2])
-	if err != nil || port < 1 || port > 65535 {
-		fmt.Fprintln(os.Stderr, "El puerto debe estar entre 1 y 65535")
-		os.Exit(2)
-	}
-	period, err := strconv.Atoi(os.Args[3])
-	if err != nil || period < 1 || period > 3600 {
-		fmt.Fprintln(os.Stderr, "El período debe estar entre 1 y 3600 segundos")
+	address, period, err := parseClientArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	address := net.JoinHostPort(os.Args[1], strconv.Itoa(port))
 	if err := sockets.RunClient(ctx, address, period); err != nil {
 		fmt.Fprintln(os.Stderr, "Error del cliente:", err)
 		os.Exit(1)
 	}
+}
+
+func parseClientArgs(args []string) (string, int, error) {
+	if len(args) < 1 || len(args) > 3 {
+		return "", 0, fmt.Errorf("Uso: cliente <IP-servidor> [puerto] [periodo-segundos]")
+	}
+	if net.ParseIP(args[0]) == nil {
+		return "", 0, fmt.Errorf("La IP del servidor no es válida")
+	}
+
+	port := 2306
+	if len(args) >= 2 {
+		value, err := strconv.Atoi(args[1])
+		if err != nil || value < 1 || value > 65535 {
+			return "", 0, fmt.Errorf("El puerto debe estar entre 1 y 65535")
+		}
+		port = value
+	}
+
+	period := 5
+	if len(args) == 3 {
+		value, err := strconv.Atoi(args[2])
+		if err != nil || value < 1 || value > 3600 {
+			return "", 0, fmt.Errorf("El período debe estar entre 1 y 3600 segundos")
+		}
+		period = value
+	}
+
+	return net.JoinHostPort(args[0], strconv.Itoa(port)), period, nil
 }
