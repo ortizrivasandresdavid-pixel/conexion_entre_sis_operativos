@@ -80,22 +80,77 @@ go run ./servidor -config servidor/server.conf
 
 El servidor escucha en `ListenIP:Port`. Para detenerlo, usa `Ctrl+C`.
 
-## Compilar y ejecutar en Windows (cliente)
+## Usar la interfaz del cliente (consola interactiva)
 
-Desde la raíz del proyecto en PowerShell:
+El proyecto no incluye una interfaz gráfica. La interfaz disponible es la consola de Windows: desde allí se inicia la conexión, se ingresan las credenciales, se escriben los diagnósticos y se reciben las métricas.
+
+### 1. Preparar el servidor
+
+En `servidor/server.conf`, configura `AllowedClientIP` con la IP del equipo Windows tal como la ve el servidor Debian. `127.0.0.1` solo sirve si el cliente y el servidor se ejecutan en el mismo equipo. Puedes usar una dirección CIDR para autorizar una red controlada.
+
+`ListenIP=0.0.0.0` permite escuchar en todas las interfaces del servidor; limita el puerto 2306 con el firewall para que solo sea accesible desde la red de laboratorio. Asegúrate también de que la IP de escucha corresponda a una interfaz disponible en Debian.
+
+Inicia el servidor desde la raíz del proyecto:
+
+```bash
+go run ./servidor -config servidor/server.conf
+```
+
+Déjalo ejecutándose mientras uses el cliente. Si cambias `UsersFile`, recuerda que su ruta relativa se resuelve respecto de la carpeta `servidor`.
+
+### 2. Iniciar el cliente en Windows
+
+Abre PowerShell en la raíz del proyecto y compila el cliente:
 
 ```powershell
 go build -o cliente.exe .\cliente
+```
+
+Ejecuta el cliente con la IP de Debian, el puerto y el intervalo de métricas (en segundos):
+
+```powershell
 .\cliente.exe 10.1.10.3 2306 5
 ```
 
-Reemplaza `10.1.10.3` por la IP del servidor Debian. El último argumento define el período de métricas en segundos (1–3600); el servidor lo limita con `MaxReportPeriodSeconds`. Si se compila en Debian para distribuir el ejecutable Windows:
+Reemplaza `10.1.10.3` por la IP real del servidor. El intervalo debe ser de 1 a 3600 segundos y no puede superar `MaxReportPeriodSeconds` del servidor.
+
+### 3. Autenticarse y usar la consola
+
+El cliente solicita las credenciales en este orden:
+
+```text
+Usuario: admin
+Password:
+```
+
+Escribe la contraseña y presiona Enter; no se mostrará mientras la escribes. Para probar en un laboratorio recién clonado, el archivo de ejemplo incluye `admin` / `linux`. Cambia esa cuenta antes de usarlo fuera de una práctica local.
+
+Después de autenticarte, puedes escribir `help` para ver la lista de diagnósticos admitidos. Por ejemplo:
+
+```text
+Autenticación correcta. Escribe help para ver los diagnósticos permitidos; bye para salir.
+Recibirás métricas cada 5 segundos.
+help
+Comandos permitidos: date, df -h, free -h, ps -eo pid,comm,%cpu,%mem --sort=-%cpu, pwd, uname -a, uptime, whoami
+df -h
+```
+
+Los comandos se ejecutan en Debian, no en Windows. Escribe el comando completo tal como aparece en `help`; no se admiten comandos arbitrarios, tuberías ni argumentos distintos. El cliente muestra las métricas periódicas en la misma consola, incluso mientras escribes. Para cerrar la sesión de forma normal, escribe `bye`.
+
+Si la conexión se interrumpe, revisa la IP, el puerto, el firewall y `AllowedClientIP`; luego vuelve a iniciar el cliente. Un error de autenticación permite reintentar hasta alcanzar `MaxAuthAttempts`.
+
+### Problemas frecuentes
+
+- **No se puede conectar:** verifica que el servidor esté ejecutándose y que el puerto TCP configurado esté permitido en el firewall.
+- **IP no autorizada:** `AllowedClientIP` debe coincidir con la IP de origen del cliente que recibe Debian (o con una red CIDR que la incluya).
+- **Credenciales incorrectas:** comprueba el usuario y el hash de contraseña en el archivo indicado por `UsersFile`.
+- **Comando no permitido:** ejecuta `help` y copia uno de los diagnósticos listados; no agregues argumentos.
+
+Para compilar el ejecutable de Windows desde Debian, si lo necesitas:
 
 ```bash
 GOOS=windows GOARCH=amd64 go build -o cliente.exe ./cliente
 ```
-
-El cliente solicita usuario y contraseña (la contraseña no se muestra), después acepta órdenes de diagnóstico. Las métricas se imprimen a medida que llegan, incluso mientras se escribe en la consola. Escribe `bye` para cerrar limpiamente la conexión. Un fallo de conexión se informa; inicia el cliente otra vez para reconectar.
 
 ## Ejecutar el shell de diagnóstico local
 
