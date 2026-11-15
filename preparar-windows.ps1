@@ -1,120 +1,167 @@
-#Requires -RunAsAdministrator
-
 $ErrorActionPreference = 'Stop'
+
+# Verificar permisos de administrador sin cerrar la ventana abruptamente
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "Solicitando permisos de Administrador..." -ForegroundColor Yellow
+    Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$PSCommandPath`""
+    exit
+}
+
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$msysRoot = 'C:\msys64'
-$gcc = Join-Path $msysRoot 'ucrt64\bin\gcc.exe'
-$goBin = Join-Path $env:ProgramFiles 'Go\bin'
-$requiredGo = [version]'1.27.3'
+Set-Location $root
+
+function Refresh-EnvPath {
+    $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = "$machinePath;$userPath"
+}
+
+function Find-Go {
+    $cmd = Get-Command go -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $defaultGo = Join-Path $env:ProgramFiles 'Go\bin\go.exe'
+    if (Test-Path $defaultGo) {
+        $env:Path = "$(Split-Path $defaultGo);$env:Path"
+        return $defaultGo
+    }
+    return $null
+}
+
+function Find-Gcc {
+    # Buscar primero en mingw64 (instalación estándar) y luego en ucrt64
+    $candidates = @(
+        'C:\msys64\mingw64\bin\gcc.exe',
+        'C:\msys64\ucrt64\bin\gcc.exe'
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    $cmd = Get-Command gcc -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
 
 function Invoke-Winget {
     param([string[]]$Arguments)
 
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        throw 'No se encontró winget. Instala App Installer desde Microsoft Store y vuelve a ejecutar este archivo.'
+    }
     & winget @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "winget falló ($LASTEXITCODE): $($Arguments -join ' ')"
     }
 }
 
-function Get-GoExecutable {
-    $candidate = Get-Command go -ErrorAction SilentlyContinue
-    if ($candidate) {
-        return $candidate.Source
+function Get-GoVersion {
+    param([string]$Executable)
+
+    $output = & $Executable version
+    if ($output -notmatch 'go version go(?<version>\d+\.\d+(?:\.\d+)?)') {
+        throw "No se pudo interpretar la versión de Go: $output"
     }
-
-    $installedGo = Join-Path $goBin 'go.exe'
-    if (Test-Path $installedGo) {
-        $env:Path = "$goBin;$env:Path"
-        return $installedGo
+    $version = $Matches.version
+    if ($version -match '^\d+\.\d+$') {
+        $version = "$version.0"
     }
-
-    return $null
+    return [version]$version
 }
 
-if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    throw 'No se encontró winget. Instala App Installer desde Microsoft Store y vuelve a ejecutar este archivo.'
+# Leer versión mínima de Go desde go.mod (por defecto 1.22.0)
+$requiredGo = [version]'1.22.0'
+$goModPath = Join-Path $root 'go.mod'
+if (Test-Path $goModPath) {
+    $goModLine = Select-String -Path $goModPath -Pattern '^go\s+(\d+\.\d+(?:\.\d+)?)' | Select-Object -First 1
+    if ($goModLine) {
+        $verStr = $goModLine.Matches.Groups[1].Value
+        if ($verStr -match '^\d+\.\d+$') { $verStr = "$verStr.0" }
+        $requiredGo = [version]$verStr
+    }
 }
 
-if (-not (Get-GoExecutable)) {
-    Invoke-Winget @('install', '--id', 'GoLang.Go', '--exact', '--accept-source-agreements', '--accept-package-agreements')
-    $env:Path = "$goBin;$env:Path"
-}
-
-$go = Get-GoExecutable
+Write-Host "[1/4] Verificando Go (mínimo requerido: $requiredGo)..." -ForegroundColor Cyan
+$go = Find-Go
 if (-not $go) {
-    throw 'No se encontró Go después de instalarlo. Cierra y vuelve a abrir PowerShell, y ejecuta el archivo otra vez.'
+    Write-Host "Instalando Go mediante winget..." -ForegroundColor Yellow
+    Invoke-Winget @('install', '--id', 'GoLang.Go', '--exact', '--accept-source-agreements', '--accept-package-agreements')
+    Refresh-EnvPath
+    $go = Find-Go
+}
+if (-not $go) {
+    throw "No se encontró Go después de instalarlo. Cierra esta ventana, abre una nueva terminal y vuelve a ejecutar."
 }
 
-$goOutput = & $go version
-if ($goOutput -notmatch 'go version go(?<version>\d+\.\d+\.\d+)') {
-    throw "No se pudo interpretar la versión de Go: $goOutput"
-}
-$installedGoVersion = [version]$Matches.version
-if ($installedGoVersion -lt $requiredGo) {
-    & winget upgrade --id GoLang.Go --exact --accept-source-agreements --accept-package-agreements
-    $env:Path = "$goBin;$env:Path"
-    $go = Get-GoExecutable
-    $goOutput = & $go version
-    if ($goOutput -notmatch 'go version go(?<version>\d+\.\d+\.\d+)') {
-        throw "No se pudo interpretar la versión de Go: $goOutput"
+$installedGo = Get-GoVersion $go
+if ($installedGo -lt $requiredGo) {
+    Write-Host "Actualizando Go..." -ForegroundColor Yellow
+    Invoke-Winget @('upgrade', '--id', 'GoLang.Go', '--exact', '--accept-source-agreements', '--accept-package-agreements')
+    Refresh-EnvPath
+    $go = Find-Go
+    if (-not $go) {
+        throw 'No se encontró Go después de actualizarlo.'
     }
-    $installedGoVersion = [version]$Matches.version
-    if ($installedGoVersion -lt $requiredGo) {
-        throw "Se requiere Go $requiredGo o posterior; se encontró $installedGoVersion. Actualiza Go y vuelve a ejecutar."
+    $installedGo = Get-GoVersion $go
+    if ($installedGo -lt $requiredGo) {
+        throw "Se requiere Go $requiredGo o posterior; se encontró Go $installedGo."
     }
 }
+Write-Host "Usando: $(& $go version)" -ForegroundColor Green
 
+Write-Host "[2/4] Verificando compilador C (GCC para Fyne)..." -ForegroundColor Cyan
+$gcc = Find-Gcc
+if (-not $gcc) {
+    $pacman = 'C:\msys64\usr\bin\pacman.exe'
+    if (-not (Test-Path $pacman)) {
+        Write-Host "Instalando MSYS2..." -ForegroundColor Yellow
+        Invoke-Winget @('install', '--id', 'MSYS2.MSYS2', '--exact', '--accept-source-agreements', '--accept-package-agreements')
+        Refresh-EnvPath
+    }
+    if (Test-Path $pacman) {
+        Write-Host "Instalando MinGW64 GCC con pacman..." -ForegroundColor Yellow
+        & $pacman -S --needed --noconfirm mingw-w64-x86_64-gcc
+        if ($LASTEXITCODE -ne 0) {
+            throw 'No se pudo instalar GCC con MSYS2/pacman.'
+        }
+    }
+    $gcc = Find-Gcc
+}
+if (-not $gcc) {
+    throw "No se encontró gcc.exe. Instala MSYS2 en C:\msys64 y ejecuta: pacman -S mingw-w64-x86_64-gcc"
+}
+Write-Host "Usando GCC: $gcc" -ForegroundColor Green
+
+Write-Host "[3/4] Verificando Tailscale..." -ForegroundColor Cyan
 $tailscaleExe = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
 if (-not (Get-Command tailscale -ErrorAction SilentlyContinue) -and -not (Test-Path $tailscaleExe)) {
     Invoke-Winget @('install', '--id', 'Tailscale.Tailscale', '--exact', '--accept-source-agreements', '--accept-package-agreements')
 }
 
-if (-not (Test-Path $gcc)) {
-    if (-not (Test-Path (Join-Path $msysRoot 'usr\bin\pacman.exe'))) {
-        Invoke-Winget @('install', '--id', 'MSYS2.MSYS2', '--exact', '--accept-source-agreements', '--accept-package-agreements')
-    }
-    $pacman = Join-Path $msysRoot 'usr\bin\pacman.exe'
-    if (-not (Test-Path $pacman)) {
-        throw "No se encontró MSYS2 en $msysRoot. Instálalo allí o ajusta la ruta en preparar-windows.ps1."
-    }
-    & $pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-gcc
-    if ($LASTEXITCODE -ne 0) {
-        throw 'No se pudo instalar GCC con MSYS2/pacman.'
-    }
-}
-
+Write-Host "[4/4] Compilando cliente de consola y cliente gráfico (Fyne)..." -ForegroundColor Cyan
 $env:CC = $gcc
 $env:CGO_ENABLED = '1'
 $env:Path = "$(Split-Path -Parent $gcc);$env:Path"
+
 $dist = Join-Path $root 'dist\windows'
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
-Push-Location $root
-try {
-    & $go mod download
-    if ($LASTEXITCODE -ne 0) {
-        throw 'No se pudieron descargar las dependencias de Go del cliente.'
-    }
+& $go mod download
+if ($LASTEXITCODE -ne 0) { throw "Falló 'go mod download' en la raíz." }
+
+if (Test-Path (Join-Path $root 'cliente')) {
     & $go build -o (Join-Path $dist 'cliente.exe') .\cliente
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Falló la compilación del cliente de consola.'
-    }
-
-    & $go -C .\src\opergui mod download
-    if ($LASTEXITCODE -ne 0) {
-        throw 'No se pudieron descargar las dependencias de Go de la interfaz gráfica.'
-    }
-    & $go -C .\src\opergui build -o ..\..\dist\windows\cliente-gui.exe .
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Falló la compilación del cliente gráfico.'
-    }
-}
-finally {
-    Pop-Location
+    if ($LASTEXITCODE -ne 0) { throw "Falló la compilación de cliente.exe." }
 }
 
-Write-Host ''
-Write-Host 'Listo. Ejecutables creados en dist\windows:'
-Write-Host '  cliente.exe      (consola)'
-Write-Host '  cliente-gui.exe  (interfaz gráfica)'
-Write-Host 'Inicia sesión en Tailscale en Windows antes de conectarte.'
+$guiDir = Join-Path $root 'src\opergui'
+if (Test-Path $guiDir) {
+    & $go -C $guiDir mod download
+    if ($LASTEXITCODE -ne 0) { throw "Falló 'go mod download' en src\opergui." }
+
+    & $go -C $guiDir build -o (Join-Path $dist 'cliente-gui.exe') .
+    if ($LASTEXITCODE -ne 0) { throw "Falló la compilación de cliente-gui.exe." }
+}
+
+Write-Host ""
+Write-Host "✅ ¡Proceso completado! Ejecutables creados en: $dist" -ForegroundColor Green
+Get-ChildItem $dist | Format-Table Name, Length, LastWriteTime
