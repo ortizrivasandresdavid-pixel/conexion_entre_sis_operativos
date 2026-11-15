@@ -13,8 +13,12 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "-gui" {
+		runGUI()
+		return
+	}
 	if len(os.Args) != 4 {
-		fmt.Fprintln(os.Stderr, "Uso: cliente <IP-servidor> <puerto> <periodo-segundos>")
+		fmt.Fprintln(os.Stderr, "Uso: cliente <IP-servidor> <puerto> <periodo-segundos> | cliente -gui")
 		os.Exit(2)
 	}
 	if net.ParseIP(os.Args[1]) == nil {

@@ -3,15 +3,150 @@ package sockets
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/term"
 	"operativos/src/login"
 )
+
+type ClientEvent struct {
+	Message Message
+	Err     error
+}
+
+type Client struct {
+	conn      net.Conn
+	cancel    context.CancelFunc
+	events    chan ClientEvent
+	writeMu   sync.Mutex
+	nextID    uint64
+	closeOnce sync.Once
+}
+
+func ConnectClient(ctx context.Context, address string, reportPeriodSeconds int, username, password string) (*Client, error) {
+	if reportPeriodSeconds < 1 || reportPeriodSeconds > 3600 {
+		return nil, fmt.Errorf("el período de reporte debe estar entre 1 y 3600 segundos")
+	}
+	if strings.TrimSpace(username) == "" || password == "" {
+		return nil, fmt.Errorf("el usuario y la contraseña son obligatorios")
+	}
+
+	conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("conectar con el servidor: %w", err)
+	}
+	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopClose()
+	fail := func(err error) (*Client, error) {
+		_ = conn.Close()
+		return nil, err
+	}
+
+	reader := newMessageReader(conn)
+	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return fail(fmt.Errorf("configurar tiempo límite de autenticación: %w", err))
+	}
+	challenge, err := reader.Read()
+	if err != nil {
+		return fail(fmt.Errorf("recibir desafío de autenticación: %w", err))
+	}
+	if challenge.Type != "auth_challenge" || challenge.Nonce == "" {
+		return fail(fmt.Errorf("respuesta de autenticación no válida"))
+	}
+	username = strings.TrimSpace(username)
+	if err := writeMessage(conn, Message{
+		Type:     "authenticate",
+		Username: username,
+		Proof:    login.MakeProof(username, password, challenge.Nonce),
+	}); err != nil {
+		return fail(err)
+	}
+	result, err := reader.Read()
+	if err != nil {
+		return fail(fmt.Errorf("recibir resultado de autenticación: %w", err))
+	}
+	if result.Type != "auth_result" {
+		return fail(fmt.Errorf("resultado de autenticación no válido"))
+	}
+	if !result.OK {
+		return fail(fmt.Errorf("autenticación fallida; intentos restantes: %d", result.AttemptsRemaining))
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return fail(fmt.Errorf("limpiar tiempo límite de conexión: %w", err))
+	}
+
+	clientCtx, cancel := context.WithCancel(ctx)
+	client := &Client{
+		conn:   conn,
+		cancel: cancel,
+		events: make(chan ClientEvent, 16),
+		nextID: 2,
+	}
+	if err := writeMessage(conn, Message{Type: "set_period", ID: 1, PeriodSeconds: reportPeriodSeconds}); err != nil {
+		cancel()
+		return fail(err)
+	}
+	stopClientClose := context.AfterFunc(clientCtx, func() { _ = conn.Close() })
+	go client.readEvents(clientCtx, reader, stopClientClose)
+	return client, nil
+}
+
+func (c *Client) Events() <-chan ClientEvent {
+	return c.events
+}
+
+func (c *Client) SendCommand(command string) error {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return fmt.Errorf("el comando no puede estar vacío")
+	}
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if err := writeMessage(c.conn, Message{Type: "command", ID: c.nextID, Command: command}); err != nil {
+		return err
+	}
+	c.nextID++
+	return nil
+}
+
+func (c *Client) Close() {
+	c.closeOnce.Do(func() {
+		c.cancel()
+		_ = c.conn.Close()
+	})
+}
+
+func (c *Client) readEvents(ctx context.Context, reader *messageReader, stopClose func() bool) {
+	defer close(c.events)
+	defer c.cancel()
+	defer c.conn.Close()
+	defer stopClose()
+
+	for {
+		message, err := reader.Read()
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) && ctx.Err() == nil {
+				select {
+				case c.events <- ClientEvent{Err: fmt.Errorf("conexión cerrada por el servidor: %w", err)}:
+				case <-ctx.Done():
+				}
+			}
+			return
+		}
+		select {
+		case c.events <- ClientEvent{Message: message}:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
 
 func RunClient(ctx context.Context, address string, reportPeriodSeconds int) error {
 	if reportPeriodSeconds < 1 || reportPeriodSeconds > 3600 {

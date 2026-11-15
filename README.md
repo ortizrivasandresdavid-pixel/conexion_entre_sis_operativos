@@ -89,13 +89,20 @@ go build -o cliente.exe .\cliente
 .\cliente.exe 10.1.10.3 2306 5
 ```
 
-Reemplaza `10.1.10.3` por la IP del servidor Debian. El último argumento define el período de métricas en segundos (1–3600); el servidor lo limita con `MaxReportPeriodSeconds`. Si se compila en Debian para distribuir el ejecutable Windows:
-
-```bash
-GOOS=windows GOARCH=amd64 go build -o cliente.exe ./cliente
-```
+Reemplaza `10.1.10.3` por la IP del servidor Debian. El último argumento define el período de métricas en segundos (1–3600); el servidor lo limita con `MaxReportPeriodSeconds`. La GUI de Fyne requiere CGO y un compilador C compatible. Para compilar el ejecutable Windows desde Debian/Linux se debe configurar un compilador cruzado MinGW-w64 compatible con CGO; el comando directo de compilación cruzada de Go no es suficiente.
 
 El cliente solicita usuario y contraseña (la contraseña no se muestra), después acepta órdenes de diagnóstico. Las métricas se imprimen a medida que llegan, incluso mientras se escribe en la consola. Escribe `bye` para cerrar limpiamente la conexión. Un fallo de conexión se informa; inicia el cliente otra vez para reconectar.
+
+### Interfaz gráfica de terminal (Fyne)
+
+El cliente también incluye una GUI de tema oscuro con consola de diagnósticos, estado de conexión, reportes periódicos y barras de CPU, memoria y disco. Desde la raíz del proyecto:
+
+```powershell
+go build -o cliente.exe .\cliente
+.\cliente.exe -gui
+```
+
+En la ventana, ingresa IP, puerto, período de reporte, usuario y contraseña. La interfaz autentica mediante el mismo protocolo SHA-256, y envía únicamente los diagnósticos permitidos por el servidor. El modo de consola y sus argumentos siguen disponibles sin cambios. En Windows, instala un compilador C compatible con CGO (por ejemplo, MinGW-w64) antes de compilar.
 
 ## Ejecutar el shell de diagnóstico local
 
@@ -110,5 +117,5 @@ Escribe `help` para ver los diagnósticos permitidos y `exit` o `bye` para salir
 ## Pruebas
 
 ```bash
-go test ./cliente ./servidor ./src/login ./src/metrics ./src/shell ./src/sockets
+go test -tags ci ./cliente ./servidor ./src/login ./src/metrics ./src/shell ./src/sockets
 ```
