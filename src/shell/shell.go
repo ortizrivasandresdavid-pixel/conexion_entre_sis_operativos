@@ -15,6 +15,7 @@ var diagnosticCommands = map[string][]string{
 	"date":   {"-Is"},
 	"df":     {"-h"},
 	"free":   {"-h"},
+	"ls":     {"-l"},
 	"ps":     {"-eo", "pid,comm,%cpu,%mem", "--sort=-%cpu"},
 	"pwd":    nil,
 	"uname":  {"-a"},
@@ -23,7 +24,7 @@ var diagnosticCommands = map[string][]string{
 }
 
 func AllowedCommands() []string {
-	return []string{"date", "df -h", "free -h", "ps -eo pid,comm,%cpu,%mem --sort=-%cpu", "pwd", "uname -a", "uptime", "whoami"}
+	return []string{"date", "df -h", "free -h", "ls -l", "ps -eo pid,comm,%cpu,%mem --sort=-%cpu", "pwd", "uname -a", "uptime", "whoami"}
 }
 
 func Execute(ctx context.Context, command string) (string, error) {

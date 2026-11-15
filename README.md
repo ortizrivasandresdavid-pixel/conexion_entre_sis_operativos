@@ -10,6 +10,7 @@ Por seguridad, el servidor **no ejecuta órdenes arbitrarias ni usa `bash -c`**.
 date
 df -h
 free -h
+ls -l
 ps -eo pid,comm,%cpu,%mem --sort=-%cpu
 pwd
 uname -a
@@ -131,7 +132,7 @@ Después de autenticarte, puedes escribir `help` para ver la lista de diagnósti
 Autenticación correcta. Escribe help para ver los diagnósticos permitidos; bye para salir.
 Recibirás métricas cada 5 segundos.
 help
-Comandos permitidos: date, df -h, free -h, ps -eo pid,comm,%cpu,%mem --sort=-%cpu, pwd, uname -a, uptime, whoami
+Comandos permitidos: date, df -h, free -h, ls -l, ps -eo pid,comm,%cpu,%mem --sort=-%cpu, pwd, uname -a, uptime, whoami
 df -h
 ```
 
@@ -151,6 +152,25 @@ Para compilar el ejecutable de Windows desde Debian, si lo necesitas:
 ```bash
 GOOS=windows GOARCH=amd64 go build -o cliente.exe ./cliente
 ```
+
+## Usar una terminal Debian completa por SSH
+
+La aplicación de sockets mantiene una lista cerrada de diagnósticos; `ls -l` lista el directorio de trabajo, pero no acepta rutas ni opciones adicionales. Para ejecutar cualquier comando normal de Debian, usa OpenSSH desde Windows Terminal o PowerShell, no el puerto de la aplicación.
+
+En Debian, si OpenSSH Server aún no está instalado, instálalo e inicia el servicio. Configura autenticación por clave y limita el puerto SSH (22) a la VPN en el firewall; no lo publiques directamente en Internet.
+
+```bash
+sudo apt install openssh-server
+sudo systemctl enable --now ssh
+```
+
+Desde PowerShell, conecta usando una cuenta normal de Debian y la IP VPN del servidor:
+
+```powershell
+ssh usuario@10.8.0.1
+```
+
+Reemplaza `usuario` y `10.8.0.1` por la cuenta y la IP VPN reales. Ya dentro de la sesión SSH, dispondrás de la terminal Debian completa.
 
 ## Usar la interfaz gráfica Fyne
 
