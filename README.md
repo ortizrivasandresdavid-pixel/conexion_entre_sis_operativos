@@ -314,19 +314,20 @@ Si Windows solicita reiniciar o cerrar sesión después de instalar una herramie
 
 ### Debian: servidor
 
-Desde la raíz del proyecto ejecuta:
+Ejecuta el instalador de dependencias:
 
 ```bash
 bash ./preparar-debian.sh
 ```
 
-También puedes usar **Ejecutar como un programa** desde el administrador de archivos. El script abrirá una terminal y solicitará autorización de administrador mediante `pkexec`; no hace falta agregar tu usuario al grupo `sudo`. La carpeta generada quedará a nombre de tu usuario. Si no aparece la solicitud de autorización, ejecuta el script desde una terminal o pide al administrador que habilite PolicyKit.
+También puedes usar **Ejecutar como un programa** desde el administrador de archivos. El script abrirá una terminal y solicitará autorización de administrador mediante `pkexec`; no hace falta agregar tu usuario al grupo `sudo`. Si no aparece la solicitud de autorización, ejecútalo desde una terminal o pide al administrador que habilite PolicyKit. Este script solo instala/verifica dependencias; no compila ni inicia el servidor.
 
-El script instala Go compatible con el proyecto y Tailscale si hacen falta, y crea `dist/debian/` con el ejecutable `servidor` y copias de `server.conf` y `users.conf`. Edita `dist/debian/server.conf` para autorizar la IP VPN del cliente; después inicia sesión en Tailscale y ejecuta:
+Configura `servidor/server.conf` para autorizar la IP VPN del cliente y luego inicia el servidor con el lanzador:
 
 ```bash
-cd dist/debian
-./servidor -config server.conf
+bash ./iniciar-servidor-debian.sh
 ```
+
+El lanzador ejecuta `go run ./servidor` en una terminal y mantiene el servidor activo hasta detenerlo con `Ctrl+C`. También puedes usar **Ejecutar como un programa** sobre el lanzador. Inicia sesión en Tailscale antes de conectar el cliente.
 
 El cliente y el servidor siguen necesitando conectividad por la VPN. No publiques el puerto TCP 2306 directamente en Internet.

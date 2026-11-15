@@ -31,10 +31,15 @@ if [[ ! -t 0 || ! -t 1 ]]; then
     fi
 fi
 
-# Elevar privilegios con sudo dentro de la misma terminal
+# Solicitar elevación mediante PolicyKit; no requiere que el usuario esté en sudoers.
 if [[ "$EUID" -ne 0 ]]; then
-    echo "Solicitando permisos de administrador (sudo)..."
-    exec sudo -E bash "$(readlink -f -- "${BASH_SOURCE[0]}")" "$@"
+    SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
+    if ! command -v pkexec >/dev/null 2>&1; then
+        echo "No se encontró pkexec. Un administrador debe instalar PolicyKit o ejecutar el script como root." >&2
+        exit 1
+    fi
+    echo "Solicitando autorización de administrador..."
+    exec pkexec "$SCRIPT_PATH" "$@"
 fi
 
 # Detectar la versión mínima de Go desde go.mod.
@@ -60,7 +65,7 @@ case "$ARCH" in
         ;;
 esac
 
-echo "[1/4] Verificando paquetes base del sistema..."
+echo "[1/3] Verificando paquetes base del sistema..."
 MISSING_PACKAGES=()
 for pkg in ca-certificates curl python3; do
     if ! dpkg -s "$pkg" >/dev/null 2>&1; then
@@ -79,9 +84,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[2/4] Verificando Go (mínimo requerido: $MIN_GO_VERSION)..."
+echo "[2/3] Verificando Go (mínimo requerido: $MIN_GO_VERSION)..."
 GO_BIN="$(command -v go || true)"
 GO_VERSION=""
+if [[ -z "$GO_BIN" && -x /usr/local/go/bin/go ]]; then
+    GO_BIN="/usr/local/go/bin/go"
+fi
 if [[ -n "$GO_BIN" ]]; then
     GO_VERSION="$("$GO_BIN" version | sed -E 's/^go version go([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')"
     [[ "$GO_VERSION" =~ ^[0-9]+\.[0-9]+$ ]] && GO_VERSION="${GO_VERSION}.0"
@@ -141,41 +149,12 @@ if [[ -z "$GO_VERSION" ]] || dpkg --compare-versions "$GO_VERSION" lt "$MIN_GO_V
 fi
 echo "Usando Go $GO_VERSION: $("$GO_BIN" version)"
 
-echo "[3/4] Compilando el servidor en dist/debian..."
-DIST_DIR="$ROOT_DIR/dist/debian"
-mkdir -p "$DIST_DIR"
-
-cd "$ROOT_DIR"
-"$GO_BIN" mod download
-"$GO_BIN" build -o "$DIST_DIR/servidor" ./servidor
-
-if [[ ! -x "$DIST_DIR/servidor" ]]; then
-    echo "Error: no se generó el ejecutable $DIST_DIR/servidor." >&2
-    exit 1
-fi
-
-if [[ -f "$ROOT_DIR/servidor/server.conf" ]]; then
-    install -m 0644 "$ROOT_DIR/servidor/server.conf" "$DIST_DIR/server.conf"
-fi
-if [[ -f "$ROOT_DIR/servidor/users.conf" ]]; then
-    install -m 0644 "$ROOT_DIR/servidor/users.conf" "$DIST_DIR/users.conf"
-fi
-
-# Devolver propiedad de dist/ al usuario normal si se usó sudo
-OWNER_UID="${SUDO_UID:-${PKEXEC_UID:-}}"
-OWNER_GID="${SUDO_GID:-}"
-if [[ -n "$OWNER_UID" && -n "$OWNER_GID" ]]; then
-    chown -R "$OWNER_UID:$OWNER_GID" "$ROOT_DIR/dist"
-fi
-
-echo "[4/4] Verificando Tailscale..."
+echo "[3/3] Verificando Tailscale..."
 if ! command -v tailscale >/dev/null 2>&1; then
     curl -fsSL https://tailscale.com/install.sh -o "$TMP_DIR/tailscale-install.sh"
     sh "$TMP_DIR/tailscale-install.sh"
 fi
 
 echo
-echo "✅ ¡Listo! Ejecutable creado en: $DIST_DIR/servidor"
-echo "Inicia sesión en Tailscale con 'tailscale up' antes de conectar el cliente."
-echo "Para iniciar el servidor:"
-echo "  cd '$DIST_DIR' && ./servidor -config server.conf"
+echo "✅ Dependencias listas: Go $GO_VERSION y Tailscale."
+echo "Para iniciar el servidor, ejecuta: bash '$ROOT_DIR/iniciar-servidor-debian.sh'"
