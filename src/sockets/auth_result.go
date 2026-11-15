@@ -14,5 +14,19 @@ func authResultError(result Message) error {
 	if result.RetryAfterSeconds > 0 {
 		message += fmt.Sprintf("; espera %d segundos", result.RetryAfterSeconds)
 	}
-	return errors.New(message)
+	return &AuthResultError{Code: result.Code, message: message}
+}
+
+type AuthResultError struct {
+	Code    string
+	message string
+}
+
+func (e *AuthResultError) Error() string {
+	return e.message
+}
+
+func IsAuthLocked(err error) bool {
+	var authError *AuthResultError
+	return errors.As(err, &authError) && authError.Code == "AUTH_LOCKED"
 }

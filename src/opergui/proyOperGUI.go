@@ -40,14 +40,14 @@ func main() {
 
 	connectionStatus := widget.NewLabel("DESCONECTADO")
 	reportCount := widget.NewLabel("Reportes recibidos: 0")
-	terminal := widget.NewMultiLineEntry()
+	terminal := widget.NewLabel("")
+	terminal.Wrapping = fyne.TextWrapWord
 	terminal.TextStyle = fyne.TextStyle{Monospace: true}
-	terminal.Disable()
-	history := widget.NewMultiLineEntry()
+	history := widget.NewLabel("")
+	history.Wrapping = fyne.TextWrapWord
 	history.TextStyle = fyne.TextStyle{Monospace: true}
-	history.SetMinRowsVisible(6)
-	history.Disable()
-	historyScroll := container.NewScroll(history)
+	terminalScroll := container.NewVScroll(terminal)
+	historyScroll := container.NewVScroll(history)
 
 	cpuLabel := widget.NewLabel("CPU: --")
 	cpuBar := widget.NewProgressBar()
@@ -72,13 +72,26 @@ func main() {
 	var currentDir string
 	var reportTotal int
 	var reportHistory []string
+	var terminalOutput string
+
+	appendReport := func(line string) {
+		reportHistory = append(reportHistory, line)
+		if len(reportHistory) > 20 {
+			reportHistory = reportHistory[len(reportHistory)-20:]
+		}
+		history.SetText(strings.Join(reportHistory, "\n"))
+		historyScroll.ScrollToBottom()
+	}
 
 	appendTerminal := func(line string) {
-		text := terminal.Text
-		if text != "" && !strings.HasSuffix(text, "\n") {
-			text += "\n"
-		}
-		terminal.SetText(text + line)
+		fyne.Do(func() {
+			if terminalOutput != "" && !strings.HasSuffix(terminalOutput, "\n") {
+				terminalOutput += "\n"
+			}
+			terminalOutput += line
+			terminal.SetText(terminalOutput)
+			terminalScroll.ScrollToBottom()
+		})
 	}
 
 	setDisconnected := func(message string) {
@@ -161,12 +174,7 @@ func main() {
 		if timestamp == "" {
 			timestamp = time.Now().Format("15:04:05")
 		}
-		reportHistory = append(reportHistory, fmt.Sprintf("[%s] Reporte #%d recibido", timestamp, reportTotal))
-		if len(reportHistory) > 20 {
-			reportHistory = reportHistory[len(reportHistory)-20:]
-		}
-		history.SetText(strings.Join(reportHistory, "\n"))
-		historyScroll.ScrollToBottom()
+		appendReport(fmt.Sprintf("[%s] Reporte #%d recibido", timestamp, reportTotal))
 	}
 
 	readSession := func(session *sockets.ClientSession) {
@@ -190,7 +198,8 @@ func main() {
 					switch message.Type {
 					case "metric":
 						if message.Error != "" {
-							appendTerminal("Error al leer métricas: " + message.Error)
+							timestamp := time.Now().Format("15:04:05")
+							appendReport(fmt.Sprintf("[%s] Error al leer métricas: %s", timestamp, message.Error))
 						} else {
 							applyMetrics(message.Metrics)
 						}
@@ -269,6 +278,25 @@ func main() {
 			}
 			fyne.Do(func() {
 				if err != nil {
+					if sockets.IsAuthLocked(err) {
+						serverIP.Disable()
+						portInput.Disable()
+						periodInput.Disable()
+						usernameInput.Disable()
+						passwordInput.Disable()
+						connectButton.Disable()
+						commandInput.Disable()
+						executeButton.Disable()
+						connectionStatus.SetText("ACCESO BLOQUEADO")
+						notice := dialog.NewInformation(
+							"Acceso denegado",
+							"Acceso denegado: se ha agotado el número máximo de intentos permitidos. La aplicación se cerrará.",
+							window,
+						)
+						notice.SetOnClosed(program.Quit)
+						notice.Show()
+						return
+					}
 					appendTerminal("Error de conexión: " + err.Error())
 					setDisconnected("DESCONECTADO")
 					dialog.ShowError(err, window)
@@ -318,7 +346,7 @@ func main() {
 	)
 	resourcePanel := container.NewBorder(resourceHeader, nil, nil, nil, historyScroll)
 	split := container.NewHSplit(
-		container.NewBorder(widget.NewLabel("Terminal"), nil, nil, nil, container.NewScroll(terminal)),
+		container.NewBorder(widget.NewLabel("Terminal"), nil, nil, nil, terminalScroll),
 		resourcePanel,
 	)
 	split.SetOffset(0.7)

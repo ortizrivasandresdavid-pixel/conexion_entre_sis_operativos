@@ -18,6 +18,7 @@ type Message struct {
 	Command           string            `json:"command,omitempty"`
 	Output            string            `json:"output,omitempty"`
 	Error             string            `json:"error,omitempty"`
+	Code              string            `json:"code,omitempty"`
 	OK                bool              `json:"ok,omitempty"`
 	AttemptsRemaining int               `json:"attempts_remaining,omitempty"`
 	RetryAfterSeconds int               `json:"retry_after_seconds,omitempty"`

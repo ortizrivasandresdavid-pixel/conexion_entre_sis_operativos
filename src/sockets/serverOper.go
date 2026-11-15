@@ -173,12 +173,24 @@ func authenticateServer(
 	for {
 		remaining, retryAfter := attemptLimiter.Check(clientIP, maxAttempts)
 		if retryAfter > 0 {
+			code := "AUTH_BACKOFF"
+			message := fmt.Sprintf("autenticación bloqueada temporalmente; intente de nuevo en %d segundos", durationSeconds(retryAfter))
+			if remaining == 0 {
+				code = "AUTH_LOCKED"
+				message = "se agotaron los intentos de autenticación"
+			}
 			if err := sendAuthResult(conn, Message{
-				Error:             "autenticación bloqueada temporalmente",
+				Code:              code,
+				Error:             message,
 				AttemptsRemaining: remaining,
 				RetryAfterSeconds: durationSeconds(retryAfter),
 			}); err != nil {
 				return err
+			}
+			if remaining == 0 {
+				if err := conn.Close(); err != nil {
+					return fmt.Errorf("cerrar conexión bloqueada: %w", err)
+				}
 			}
 			return fmt.Errorf("autenticación bloqueada temporalmente para %s", clientIP)
 		}
@@ -205,14 +217,24 @@ func authenticateServer(
 
 		remaining, retryAfter = attemptLimiter.Check(clientIP, maxAttempts)
 		if retryAfter > 0 {
+			code := "AUTH_BACKOFF"
+			message := fmt.Sprintf("autenticación bloqueada temporalmente; intente de nuevo en %d segundos", durationSeconds(retryAfter))
+			if remaining == 0 {
+				code = "AUTH_LOCKED"
+				message = "se agotaron los intentos de autenticación"
+			}
 			if err := sendAuthResult(conn, Message{
-				Error:             "autenticación bloqueada temporalmente",
+				Code:              code,
+				Error:             message,
 				AttemptsRemaining: remaining,
 				RetryAfterSeconds: durationSeconds(retryAfter),
 			}); err != nil {
 				return err
 			}
 			if remaining == 0 {
+				if err := conn.Close(); err != nil {
+					return fmt.Errorf("cerrar conexión bloqueada: %w", err)
+				}
 				return fmt.Errorf("se agotaron los intentos de autenticación para %s", clientIP)
 			}
 			if err := waitForAuthRetry(ctx, retryAfter); err != nil {
@@ -231,14 +253,24 @@ func authenticateServer(
 		if err := conn.SetDeadline(time.Now().Add(retryAfter + 30*time.Second)); err != nil {
 			return fmt.Errorf("configurar espera de autenticación: %w", err)
 		}
+		code := "AUTH_BACKOFF"
+		message := fmt.Sprintf("credenciales incorrectas; intente de nuevo en %d segundos", durationSeconds(retryAfter))
+		if remaining == 0 {
+			code = "AUTH_LOCKED"
+			message = "se agotaron los intentos de autenticación"
+		}
 		if err := sendAuthResult(conn, Message{
-			Error:             "credenciales incorrectas",
+			Code:              code,
+			Error:             message,
 			AttemptsRemaining: remaining,
 			RetryAfterSeconds: durationSeconds(retryAfter),
 		}); err != nil {
 			return err
 		}
 		if remaining == 0 {
+			if err := conn.Close(); err != nil {
+				return fmt.Errorf("cerrar conexión bloqueada: %w", err)
+			}
 			return fmt.Errorf("se agotaron los intentos de autenticación para %s", clientIP)
 		}
 
@@ -316,6 +348,7 @@ func runSession(
 	ticker := time.NewTicker(period)
 	defer ticker.Stop()
 	commandRunning := false
+	var sessionHistory []string
 
 	for {
 		select {
@@ -345,18 +378,27 @@ func runSession(
 					return err
 				}
 			case "command":
-				if event.message.Command == "bye" {
-					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, OK: true, Output: "Sesión cerrada"}); err != nil {
-						return err
-					}
-					return nil
-				}
+				command := strings.TrimSpace(event.message.Command)
 				if commandRunning {
 					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, Error: "espera a que termine el comando actual"}); err != nil {
 						return err
 					}
 					continue
 				}
+				if output, handled := sessionHistoryCommand(command, &sessionHistory); handled {
+					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, OK: true, Output: output}); err != nil {
+						return err
+					}
+					continue
+				}
+				if command == "bye" {
+					sessionHistory = append(sessionHistory, command)
+					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, OK: true, Output: "Sesión cerrada"}); err != nil {
+						return err
+					}
+					return nil
+				}
+				sessionHistory = append(sessionHistory, command)
 				commandRunning = true
 				go func(id uint64, command string) {
 					output, err := terminal.Execute(sessionCtx, command)
@@ -404,6 +446,23 @@ func runSession(
 				return err
 			}
 		}
+	}
+}
+
+func sessionHistoryCommand(command string, history *[]string) (string, bool) {
+	switch strings.Join(strings.Fields(command), " ") {
+	case "history":
+		*history = append(*history, "history")
+		lines := make([]string, len(*history))
+		for i, entry := range *history {
+			lines[i] = fmt.Sprintf("%d  %s", i+1, entry)
+		}
+		return strings.Join(lines, "\n"), true
+	case "history -c":
+		*history = (*history)[:0]
+		return "Historial de sesión limpiado", true
+	default:
+		return "", false
 	}
 }
 
