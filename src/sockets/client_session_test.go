@@ -30,10 +30,13 @@ func TestClientSessionAuthenticatesSetsPeriodAndSendsCommand(t *testing.T) {
 
 		reader := newMessageReader(conn)
 		if err := authenticateServer(
+			context.Background(),
 			conn,
 			reader,
 			map[string]string{"admin": login.HashPassword("secret")},
 			3,
+			login.NewAttemptLimiter(),
+			"127.0.0.1",
 		); err != nil {
 			serverResult <- err
 			return
@@ -77,7 +80,7 @@ func TestClientSessionAuthenticatesSetsPeriodAndSendsCommand(t *testing.T) {
 			Type:   "command_result",
 			ID:     command.ID,
 			OK:     true,
-			Output: "diagnósticos permitidos",
+			Output: "salida del comando",
 		}); err != nil {
 			serverResult <- err
 			return
@@ -115,7 +118,7 @@ func TestClientSessionAuthenticatesSetsPeriodAndSendsCommand(t *testing.T) {
 				if event.Message.ID != commandID {
 					t.Fatalf("command result ID = %d, want %d", event.Message.ID, commandID)
 				}
-				if event.Message.Output != "diagnósticos permitidos" {
+				if event.Message.Output != "salida del comando" {
 					t.Errorf("output = %q", event.Message.Output)
 				}
 				receivedResult = true

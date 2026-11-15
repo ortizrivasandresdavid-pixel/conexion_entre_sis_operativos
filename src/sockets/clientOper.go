@@ -34,7 +34,7 @@ func RunClient(ctx context.Context, address string, reportPeriodSeconds int) err
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return fmt.Errorf("limpiar tiempo límite de conexión: %w", err)
 	}
-	fmt.Println("Autenticación correcta. Escribe help para ver los diagnósticos permitidos; bye para salir.")
+	fmt.Println("Autenticación correcta. Escribe cualquier comando de Linux; 'bye' para salir.")
 
 	const periodRequestID = 1
 	if err := writeMessage(conn, Message{Type: "set_period", ID: periodRequestID, PeriodSeconds: reportPeriodSeconds}); err != nil {
@@ -124,6 +124,9 @@ func RunClient(ctx context.Context, address string, reportPeriodSeconds int) err
 						fmt.Println()
 					}
 				}
+				if event.message.ExitCode != 0 {
+					fmt.Fprintf(os.Stderr, "[código de salida: %d]\n", event.message.ExitCode)
+				}
 				if event.message.Error != "" {
 					fmt.Fprintln(os.Stderr, "Error:", event.message.Error)
 				}
@@ -145,6 +148,9 @@ func authenticateClient(reader *messageReader, conn net.Conn, input *bufio.Reade
 		challenge, err := reader.Read()
 		if err != nil {
 			return fmt.Errorf("recibir desafío de autenticación: %w", err)
+		}
+		if challenge.Type == "auth_result" && !challenge.OK {
+			return authResultError(challenge)
 		}
 		if challenge.Type != "auth_challenge" || challenge.Nonce == "" {
 			return fmt.Errorf("respuesta de autenticación no válida")
@@ -187,9 +193,12 @@ func authenticateClient(reader *messageReader, conn net.Conn, input *bufio.Reade
 		if result.OK {
 			return nil
 		}
-		fmt.Fprintf(os.Stderr, "Autenticación fallida; intentos restantes: %d\n", result.AttemptsRemaining)
 		if result.AttemptsRemaining == 0 {
-			return fmt.Errorf("se agotaron los intentos de autenticación")
+			return authResultError(result)
+		}
+		fmt.Fprintln(os.Stderr, authResultError(result))
+		if result.RetryAfterSeconds > 0 {
+			time.Sleep(time.Duration(result.RetryAfterSeconds) * time.Second)
 		}
 	}
 }

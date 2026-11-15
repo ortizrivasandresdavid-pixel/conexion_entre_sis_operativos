@@ -31,10 +31,16 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 	if err := validateServerConfig(config); err != nil {
 		return err
 	}
+	// Falla al arrancar (y no en la primera conexión) si el servidor no tiene
+	// bash/sh disponible para ejecutar los comandos remotos.
+	if _, err := shell.NewSession(); err != nil {
+		return fmt.Errorf("shell remoto no disponible: %w", err)
+	}
 	users, err := login.LoadUsers(config.UsersFile)
 	if err != nil {
 		return err
 	}
+	attemptLimiter := login.NewAttemptLimiter()
 
 	listener, err := net.Listen("tcp", net.JoinHostPort(config.ListenIP, strconv.Itoa(config.Port)))
 	if err != nil {
@@ -81,7 +87,7 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 				defer handlers.Done()
 				defer func() { <-slots }()
 				defer activeConnections.Delete(conn)
-				if err := serveConnection(ctx, conn, config, users); err != nil {
+				if err := serveConnection(ctx, conn, config, users, attemptLimiter); err != nil {
 					log.Printf("Conexión %s: %v", conn.RemoteAddr(), err)
 				}
 			}()
@@ -116,7 +122,13 @@ func validateServerConfig(config ServerConfig) error {
 	return nil
 }
 
-func serveConnection(ctx context.Context, conn net.Conn, config ServerConfig, users map[string]string) error {
+func serveConnection(
+	ctx context.Context,
+	conn net.Conn,
+	config ServerConfig,
+	users map[string]string,
+	attemptLimiter *login.AttemptLimiter,
+) error {
 	defer conn.Close()
 	allowed, err := parseAllowedIP(config.AllowedClientIP)
 	if err != nil {
@@ -134,18 +146,46 @@ func serveConnection(ctx context.Context, conn net.Conn, config ServerConfig, us
 	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
 		return fmt.Errorf("configurar tiempo límite de autenticación: %w", err)
 	}
-	if err := authenticateServer(conn, reader, users, config.MaxAuthAttempts); err != nil {
+	if err := authenticateServer(ctx, conn, reader, users, config.MaxAuthAttempts, attemptLimiter, remoteIP.String()); err != nil {
 		return err
 	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return fmt.Errorf("limpiar tiempo límite de conexión: %w", err)
 	}
 	log.Printf("Cliente autenticado: %s", remoteIP)
-	return runSession(ctx, conn, reader, config)
+	terminal, err := shell.NewSession()
+	if err != nil {
+		return fmt.Errorf("preparar shell remoto: %w", err)
+	}
+	log.Printf("Sesión de shell de %s iniciada en %s", remoteIP, terminal.Dir())
+	return runSession(ctx, conn, reader, config, terminal)
 }
 
-func authenticateServer(conn net.Conn, reader *messageReader, users map[string]string, maxAttempts int) error {
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+func authenticateServer(
+	ctx context.Context,
+	conn net.Conn,
+	reader *messageReader,
+	users map[string]string,
+	maxAttempts int,
+	attemptLimiter *login.AttemptLimiter,
+	clientIP string,
+) error {
+	for {
+		remaining, retryAfter := attemptLimiter.Check(clientIP, maxAttempts)
+		if retryAfter > 0 {
+			if err := sendAuthResult(conn, Message{
+				Error:             "autenticación bloqueada temporalmente",
+				AttemptsRemaining: remaining,
+				RetryAfterSeconds: durationSeconds(retryAfter),
+			}); err != nil {
+				return err
+			}
+			return fmt.Errorf("autenticación bloqueada temporalmente para %s", clientIP)
+		}
+		if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			return fmt.Errorf("configurar tiempo límite de autenticación: %w", err)
+		}
+
 		nonceBytes := make([]byte, 32)
 		if _, err := rand.Read(nonceBytes); err != nil {
 			return fmt.Errorf("generar desafío de autenticación: %w", err)
@@ -162,23 +202,73 @@ func authenticateServer(conn net.Conn, reader *messageReader, users map[string]s
 		if request.Type != "authenticate" || request.Username == "" {
 			return fmt.Errorf("solicitud de autenticación inválida")
 		}
+
+		remaining, retryAfter = attemptLimiter.Check(clientIP, maxAttempts)
+		if retryAfter > 0 {
+			if err := sendAuthResult(conn, Message{
+				Error:             "autenticación bloqueada temporalmente",
+				AttemptsRemaining: remaining,
+				RetryAfterSeconds: durationSeconds(retryAfter),
+			}); err != nil {
+				return err
+			}
+			if remaining == 0 {
+				return fmt.Errorf("se agotaron los intentos de autenticación para %s", clientIP)
+			}
+			if err := waitForAuthRetry(ctx, retryAfter); err != nil {
+				return err
+			}
+			continue
+		}
+
 		ok := login.VerifyProof(users, request.Username, nonce, request.Proof)
-		result := Message{
-			Type:              "auth_result",
-			OK:                ok,
-			AttemptsRemaining: maxAttempts - attempt,
+		if ok {
+			attemptLimiter.RecordSuccess(clientIP)
+			return sendAuthResult(conn, Message{OK: true, AttemptsRemaining: maxAttempts})
 		}
-		if !ok {
-			result.Error = "credenciales incorrectas"
+
+		remaining, retryAfter = attemptLimiter.RecordFailure(clientIP, maxAttempts)
+		if err := conn.SetDeadline(time.Now().Add(retryAfter + 30*time.Second)); err != nil {
+			return fmt.Errorf("configurar espera de autenticación: %w", err)
 		}
-		if err := writeMessage(conn, result); err != nil {
+		if err := sendAuthResult(conn, Message{
+			Error:             "credenciales incorrectas",
+			AttemptsRemaining: remaining,
+			RetryAfterSeconds: durationSeconds(retryAfter),
+		}); err != nil {
 			return err
 		}
-		if ok {
-			return nil
+		if remaining == 0 {
+			return fmt.Errorf("se agotaron los intentos de autenticación para %s", clientIP)
+		}
+
+		if err := waitForAuthRetry(ctx, retryAfter); err != nil {
+			return err
 		}
 	}
-	return fmt.Errorf("se agotaron los intentos de autenticación")
+}
+
+func sendAuthResult(conn net.Conn, result Message) error {
+	result.Type = "auth_result"
+	return writeMessage(conn, result)
+}
+
+func durationSeconds(duration time.Duration) int {
+	if duration <= 0 {
+		return 0
+	}
+	return int((duration + time.Second - 1) / time.Second)
+}
+
+func waitForAuthRetry(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 type readEvent struct {
@@ -187,12 +277,20 @@ type readEvent struct {
 }
 
 type commandResult struct {
-	id     uint64
-	output string
-	err    error
+	id       uint64
+	output   string
+	exitCode int
+	dir      string
+	err      error
 }
 
-func runSession(ctx context.Context, conn net.Conn, reader *messageReader, config ServerConfig) error {
+func runSession(
+	ctx context.Context,
+	conn net.Conn,
+	reader *messageReader,
+	config ServerConfig,
+	terminal *shell.Session,
+) error {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -254,16 +352,22 @@ func runSession(ctx context.Context, conn net.Conn, reader *messageReader, confi
 					return nil
 				}
 				if commandRunning {
-					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, Error: "hay otro comando de diagnóstico en ejecución"}); err != nil {
+					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, Error: "espera a que termine el comando actual"}); err != nil {
 						return err
 					}
 					continue
 				}
 				commandRunning = true
 				go func(id uint64, command string) {
-					output, err := shell.Execute(sessionCtx, command)
+					output, err := terminal.Execute(sessionCtx, command)
 					select {
-					case results <- commandResult{id: id, output: output, err: err}:
+					case results <- commandResult{
+						id:       id,
+						output:   output.Output,
+						exitCode: output.ExitCode,
+						dir:      output.Dir,
+						err:      err,
+					}:
 					case <-sessionCtx.Done():
 					}
 				}(event.message.ID, event.message.Command)
@@ -274,7 +378,14 @@ func runSession(ctx context.Context, conn net.Conn, reader *messageReader, confi
 			}
 		case result := <-results:
 			commandRunning = false
-			response := Message{Type: "command_result", ID: result.id, OK: result.err == nil, Output: result.output}
+			response := Message{
+				Type:     "command_result",
+				ID:       result.id,
+				OK:       result.err == nil,
+				Output:   result.output,
+				ExitCode: result.exitCode,
+				Dir:      result.dir,
+			}
 			if result.err != nil {
 				response.Error = result.err.Error()
 			}

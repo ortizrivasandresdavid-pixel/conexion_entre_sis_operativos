@@ -57,6 +57,9 @@ func ConnectClient(ctx context.Context, address string, reportPeriodSeconds int,
 	if err != nil {
 		return nil, fmt.Errorf("recibir desafío de autenticación: %w", err)
 	}
+	if challenge.Type == "auth_result" && !challenge.OK {
+		return nil, authResultError(challenge)
+	}
 	if challenge.Type != "auth_challenge" || challenge.Nonce == "" {
 		return nil, fmt.Errorf("respuesta de autenticación no válida")
 	}
@@ -76,7 +79,7 @@ func ConnectClient(ctx context.Context, address string, reportPeriodSeconds int,
 		return nil, fmt.Errorf("resultado de autenticación no válido")
 	}
 	if !result.OK {
-		return nil, fmt.Errorf("autenticación fallida; intentos restantes: %d", result.AttemptsRemaining)
+		return nil, authResultError(result)
 	}
 
 	const periodRequestID = 1

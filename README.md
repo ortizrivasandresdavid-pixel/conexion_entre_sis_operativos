@@ -1,35 +1,31 @@
 # Administración y monitorización de laboratorio en Go
 
-Ejemplo educativo de cliente Windows y servidor Debian/Linux mediante TCP. El cliente ofrece una consola de texto y una interfaz gráfica Fyne; ambas autentican al usuario, solicitan diagnósticos permitidos y muestran métricas periódicas.
+Ejemplo educativo de cliente Windows y servidor Debian/Linux mediante TCP. El cliente ofrece una consola de texto y una interfaz gráfica Fyne; ambas autentican al usuario y permiten ejecutar comandos reales en el servidor, además de mostrar métricas periódicas de CPU, memoria y disco.
 
 ## Alcance y seguridad
 
-Por seguridad, el servidor **no ejecuta órdenes arbitrarias ni usa `bash -c`**. Los únicos diagnósticos remotos permitidos son:
+El servidor **ejecuta cualquier comando de Linux** que envíe un cliente autenticado, igual que una sesión SSH: no hay lista blanca. Cada comando se evalúa con `bash` (o `sh` como alternativa) mediante `bash -c`, de modo que funcionan tuberías, redirecciones, comodines, `&&`, scripts y comandos como `cd`, `tree`, `apt`, `systemctl`, etc.
 
-```text
-date
-df -h
-free -h
-ls -l
-ps -eo pid,comm,%cpu,%mem --sort=-%cpu
-pwd
-uname -a
-uptime
-whoami
-help
-bye
-```
+El directorio de trabajo se conserva durante toda la conexión: si escribes `cd /var/log`, el siguiente comando se ejecuta en `/var/log`. Cada comando se ejecuta en un proceso `bash` nuevo, así que las variables exportadas con `export` no se conservan entre comandos.
 
-Los comandos se ejecutan sin shell y sin argumentos proporcionados por el cliente. `help` lista las opciones y `bye` cierra la sesión. `src/shell.go` reutiliza el mismo allowlist para el ejemplo de consola local.
+Esta funcionalidad es equivalente a dar una shell remota, por lo que debes tratarla con las mismas precauciones que SSH:
 
-La autenticación usa un desafío aleatorio por intento y una prueba basada en SHA-256; la contraseña no se envía en claro. El máximo de intentos se aplica a cada conexión TCP. **La conexión TCP de esta aplicación no está cifrada**: las órdenes, sus salidas y métricas pueden ser observadas si el tráfico sale de una red confiable. Para conectar desde otras redes, usa una VPN privada entre servidor y clientes; no publiques ni redirijas el puerto TCP de la aplicación directamente a Internet.
+- **La conexión TCP no está cifrada.** Los comandos, sus salidas y las métricas pueden ser observados si el tráfico sale de una red confiable. Usa una VPN privada (WireGuard, Tailscale, etc.) entre servidor y clientes y no publiques ni redirijas el puerto TCP a Internet.
+- **El servidor ejecuta los comandos con sus propios permisos.** Ejecútalo con una cuenta de laboratorio sin privilegios, nunca como `root` ni con `sudo` permanente. Quien se autentique tendrá los mismos permisos que el proceso del servidor.
+- **Autenticación y control de acceso:** desafío aleatorio por intento y prueba basada en SHA-256 (la contraseña no viaja en claro), IP o CIDR autorizado y bloqueo temporal de la IP tras varios fallos.
+
+Límites pensados para no bloquear el protocolo ni la memoria del servidor:
+
+- Cada comando tiene un **tiempo límite de 5 minutos**; al vencer se cancela el grupo de procesos y se devuelve la salida parcial.
+- La salida se limita a **2 MiB** por comando. Si se supera, se corta y se añade el aviso `[salida truncada a 2 MiB]`.
+- No es una terminal interactiva completa: no hay TTY ni Ctrl+C, así que los programas de pantalla completa (`vim`, `nano`, `top` interactivo) y los que piden contraseña por terminal (`sudo`, `passwd`) no funcionan. Usa variantes no interactivas como `top -b -n 1`.
 
 El servidor verifica la IP o CIDR autorizada y limita los intentos fallidos y el período de reporte. Admite hasta 32 conexiones simultáneas. El cliente no se reconecta automáticamente; para iniciar una nueva sesión, vuelve a ejecutarlo y autentícate de nuevo.
 
 ## Requisitos
 
 - Go 1.27.3 o posterior.
-- Servidor Debian/Linux (la recolección de CPU, procesos, memoria y disco usa `/proc` y `statfs`).
+- Servidor Debian/Linux (la recolección de CPU, procesos, memoria y disco usa `/proc` y `statfs`, y la ejecución remota requiere `bash` o `sh`).
 - Cliente Windows con acceso TCP al servidor.
 - Puerto TCP 2306 permitido en el firewall entre ambos equipos.
 
@@ -79,11 +75,11 @@ También se puede iniciar directamente:
 go run ./servidor -config servidor/server.conf
 ```
 
-El servidor escucha en `ListenIP:Port`. Para detenerlo, usa `Ctrl+C`.
+El servidor escucha en `ListenIP:Port` y arranca su shell en el directorio desde el que se lanzó. Para detenerlo, usa `Ctrl+C`.
 
 ## Usar el cliente de consola
 
-La consola de Windows permite iniciar la conexión, ingresar las credenciales, escribir diagnósticos y recibir métricas.
+La consola de Windows permite iniciar la conexión, ingresar las credenciales, ejecutar comandos y recibir métricas.
 
 ### 1. Preparar el servidor
 
@@ -115,7 +111,7 @@ Ejecuta el cliente con la IP VPN del servidor:
 
 Reemplaza `10.8.0.1` por la IP VPN real de Debian. Al indicar solo la IP, el cliente usa el puerto 2306 y recibe métricas cada 5 segundos. Si necesitas otros valores, puedes indicarlos opcionalmente: `.\cliente.exe <IP-VPN-servidor> <puerto> <periodo-segundos>`. El período debe ser de 1 a 3600 segundos y no puede superar `MaxReportPeriodSeconds` del servidor.
 
-### 3. Autenticarse y usar la consola
+### 3. Autenticarse y usar la terminal
 
 El cliente solicita las credenciales en este orden:
 
@@ -126,26 +122,29 @@ Password:
 
 Escribe la contraseña y presiona Enter; no se mostrará mientras la escribes. Para probar en un laboratorio recién clonado, el archivo de ejemplo incluye `admin` / `linux`. Cambia esa cuenta antes de usarlo fuera de una práctica local.
 
-Después de autenticarte, puedes escribir `help` para ver la lista de diagnósticos admitidos. Por ejemplo:
+Después de autenticarte puedes escribir cualquier comando de Linux. Por ejemplo:
 
 ```text
-Autenticación correcta. Escribe help para ver los diagnósticos permitidos; bye para salir.
+Autenticación correcta. Escribe cualquier comando de Linux; 'bye' para salir.
 Recibirás métricas cada 5 segundos.
-help
-Comandos permitidos: date, df -h, free -h, ls -l, ps -eo pid,comm,%cpu,%mem --sort=-%cpu, pwd, uname -a, uptime, whoami
-df -h
+ls -la
+cd /var/log
+pwd
+tail -n 20 syslog
 ```
 
-Los comandos se ejecutan en Debian, no en Windows. Escribe el comando completo tal como aparece en `help`; no se admiten comandos arbitrarios, tuberías ni argumentos distintos. El cliente muestra las métricas periódicas en la misma consola, incluso mientras escribes. Para cerrar la sesión de forma normal, escribe `bye`.
+`cd`, `pwd`, `tree` y el resto de comandos se ejecutan en Debian, no en Windows. Como el directorio de trabajo se conserva, tras `cd /var/log` el siguiente `pwd` responde `/var/log`. Si un comando devuelve un código de salida distinto de cero, el cliente muestra `[código de salida: N]` sin cortar la sesión. El cliente muestra las métricas periódicas en la misma consola, incluso mientras escribes. Para cerrar la sesión de forma normal, escribe `bye`.
 
-Si la conexión se interrumpe, confirma que la VPN esté conectada en ambos equipos y revisa la IP VPN, el puerto, el firewall y `AllowedClientIP`; luego vuelve a iniciar el cliente. Un error de autenticación permite reintentar hasta alcanzar `MaxAuthAttempts`.
+Si la conexión se interrumpe, confirma que la VPN esté conectada en ambos equipos y revisa la IP VPN, el puerto, el firewall y `AllowedClientIP`; luego vuelve a iniciar el cliente. Los fallos de autenticación persisten por IP incluso al abrir otra conexión y el cliente informa la espera y los intentos restantes.
 
 ### Problemas frecuentes
 
 - **No se puede conectar:** verifica que la VPN esté activa en ambos equipos, que haya una ruta entre sus IP VPN, que el servidor esté ejecutándose y que el firewall permita TCP 2306 desde la VPN.
 - **IP no autorizada:** `AllowedClientIP` debe coincidir con la IP VPN del cliente (o con la subred VPN que la incluya).
 - **Credenciales incorrectas:** comprueba el usuario y el hash de contraseña en el archivo indicado por `UsersFile`.
-- **Comando no permitido:** ejecuta `help` y copia uno de los diagnósticos listados; no agregues argumentos.
+- **`tree: command not found`:** instálalo en el servidor con `sudo apt install tree`.
+- **Un comando se queda colgado:** espera a que venza el límite de 5 minutos; los programas interactivos o que esperan un TTY (por ejemplo `sudo` o `vim`) no funcionan por este canal.
+- **Autenticación bloqueada:** espera el tiempo indicado antes de intentar de nuevo. El bloqueo se aplica a la IP cliente.
 
 Para compilar el ejecutable de Windows desde Debian, si lo necesitas:
 
@@ -153,28 +152,22 @@ Para compilar el ejecutable de Windows desde Debian, si lo necesitas:
 GOOS=windows GOARCH=amd64 go build -o cliente.exe ./cliente
 ```
 
-## Usar una terminal Debian completa por SSH
+## Diferencia con SSH
 
-La aplicación de sockets mantiene una lista cerrada de diagnósticos; `ls -l` lista el directorio de trabajo, pero no acepta rutas ni opciones adicionales. Para ejecutar cualquier comando normal de Debian, usa OpenSSH desde Windows Terminal o PowerShell, no el puerto de la aplicación.
-
-En Debian, si OpenSSH Server aún no está instalado, instálalo e inicia el servicio. Configura autenticación por clave y limita el puerto SSH (22) a la VPN en el firewall; no lo publiques directamente en Internet.
+Esta aplicación usa su propio protocolo TCP sin cifrar y sin TTY; SSH sigue siendo la opción recomendada para administración interactiva en producción. El proyecto implementa su propio canal para cumplir el objetivo académico de sockets, autenticación y métricas. Si usas OpenSSH en paralelo, instálalo y limita el puerto 22 a la VPN:
 
 ```bash
 sudo apt install openssh-server
 sudo systemctl enable --now ssh
 ```
 
-Desde PowerShell, conecta usando una cuenta normal de Debian y la IP VPN del servidor:
-
 ```powershell
 ssh usuario@10.8.0.1
 ```
 
-Reemplaza `usuario` y `10.8.0.1` por la cuenta y la IP VPN reales. Ya dentro de la sesión SSH, dispondrás de la terminal Debian completa.
-
 ## Usar la interfaz gráfica Fyne
 
-La aplicación gráfica tiene apariencia de terminal e incluye campos de IP, puerto, período, usuario y contraseña; una salida de comandos, un campo para enviar diagnósticos, barras de CPU/memoria/disco y un contador e historial de reportes. La autenticación y el intercambio de mensajes reutilizan el protocolo TCP de `src/sockets`; los reportes se procesan concurrentemente y se reflejan en la ventana sin bloquearla.
+La aplicación gráfica tiene fondo negro, texto verde monoespaciado en la terminal y el historial de reportes. Incluye campos de IP, puerto, período, usuario y contraseña; salida de comandos, barras de CPU/memoria/disco, contador e historial con desplazamiento automático. La autenticación y el intercambio de mensajes reutilizan el protocolo TCP de `src/sockets`; los reportes se procesan concurrentemente y se reflejan en la ventana sin bloquearla.
 
 La GUI está en su propio módulo para que Fyne no cambie las dependencias del cliente de consola ni del servidor. En Windows, Fyne requiere CGo y un compilador C. Si usas MSYS2 en `C:\msys64`, configura MinGW64 en la misma ventana de PowerShell antes de ejecutar o compilar:
 
@@ -197,11 +190,11 @@ go -C .\src\opergui build -o ..\..\cliente-gui.exe .
 .\cliente-gui.exe
 ```
 
-En la ventana, ingresa la IP del servidor, el puerto (por defecto `2306`), el período de reportes (por defecto `5` segundos) y las credenciales; luego selecciona **Conectar**. Tras autenticarte, escribe un comando permitido como `help` o `df -h` y presiona Enter o **Ejecutar**. Solo se permite un comando pendiente a la vez; los reportes periódicos siguen actualizando el panel lateral. Para cerrar la sesión, envía `bye`.
+En la ventana, ingresa la IP del servidor, el puerto (por defecto `2306`), el período de reportes (por defecto `5` segundos) y las credenciales; luego selecciona **Conectar**. Tras autenticarte, escribe cualquier comando de Linux (`ls -la`, `df -h`, `cd /tmp`, `pwd`...) y presiona Enter o **Ejecutar**. El indicador antes de cada comando muestra el directorio de trabajo actual en el servidor, y las salidas con código distinto de cero se marcan con `[código de salida: N]`. Solo se permite un comando pendiente a la vez; los reportes periódicos siguen actualizando el panel lateral. Para cerrar la sesión, envía `bye`.
 
 La GUI y el cliente de consola son ejecutables separados. Los argumentos de consola siguen siendo compatibles (`cliente <IP-servidor> [puerto] [periodo-segundos]`); para la GUI, esos valores se ingresan en los campos de la ventana.
 
-## Ejecutar el shell de diagnóstico local
+## Ejecutar el shell local
 
 En Linux, desde la raíz:
 
@@ -209,10 +202,12 @@ En Linux, desde la raíz:
 go run ./src/shell.go
 ```
 
-Escribe `help` para ver los diagnósticos permitidos y `exit` o `bye` para salir. El shell local tampoco ejecuta órdenes fuera de la lista.
+También ejecuta cualquier comando de tu propia shell y conserva el directorio de trabajo entre comandos. Escribe `exit` o `bye` para salir.
 
 ## Pruebas
 
 ```bash
 go test ./cliente ./servidor ./src/login ./src/metrics ./src/shell ./src/sockets
 ```
+
+Las pruebas de `src/shell` ejecutan `bash`/`sh`, así que se omiten en Windows o donde no haya una shell POSIX disponible.

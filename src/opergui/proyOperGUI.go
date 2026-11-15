@@ -15,7 +15,6 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"operativos/src/metrics"
 	"operativos/src/sockets"
@@ -23,7 +22,7 @@ import (
 
 func main() {
 	program := app.NewWithID("operativos.gui")
-	program.Settings().SetTheme(theme.DarkTheme())
+	program.Settings().SetTheme(newTerminalTheme())
 	window := program.NewWindow("Cliente Operativos - Universidad de los Llanos")
 	appContext, cancelApp := context.WithCancel(context.Background())
 
@@ -46,7 +45,9 @@ func main() {
 	terminal.Disable()
 	history := widget.NewMultiLineEntry()
 	history.TextStyle = fyne.TextStyle{Monospace: true}
+	history.SetMinRowsVisible(6)
 	history.Disable()
+	historyScroll := container.NewScroll(history)
 
 	cpuLabel := widget.NewLabel("CPU: --")
 	cpuBar := widget.NewProgressBar()
@@ -59,7 +60,7 @@ func main() {
 	diskBar.Max = 100
 
 	commandInput := widget.NewEntry()
-	commandInput.SetPlaceHolder("Escribe un diagnóstico permitido, por ejemplo: df -h")
+	commandInput.SetPlaceHolder("Escribe un comando de Linux y presiona Enter (p. ej. ls -la)")
 	commandInput.Disable()
 	executeButton := widget.NewButton("Ejecutar", nil)
 	executeButton.Disable()
@@ -68,6 +69,7 @@ func main() {
 	var activeSession *sockets.ClientSession
 	var pendingCommandID uint64
 	var pendingCommand string
+	var currentDir string
 	var reportTotal int
 	var reportHistory []string
 
@@ -86,6 +88,7 @@ func main() {
 		}
 		pendingCommandID = 0
 		pendingCommand = ""
+		currentDir = ""
 		commandInput.Disable()
 		executeButton.Disable()
 		serverIP.Enable()
@@ -112,7 +115,11 @@ func main() {
 			setDisconnected("DESCONECTADO")
 			return
 		}
-		appendTerminal("$ " + command)
+		prompt := "$"
+		if currentDir != "" {
+			prompt = currentDir + " $"
+		}
+		appendTerminal(prompt + " " + command)
 		pendingCommandID = id
 		pendingCommand = command
 		commandInput.SetText("")
@@ -159,6 +166,7 @@ func main() {
 			reportHistory = reportHistory[len(reportHistory)-20:]
 		}
 		history.SetText(strings.Join(reportHistory, "\n"))
+		historyScroll.ScrollToBottom()
 	}
 
 	readSession := func(session *sockets.ClientSession) {
@@ -190,8 +198,14 @@ func main() {
 						if message.Output != "" {
 							appendTerminal(strings.TrimRight(message.Output, "\n"))
 						}
+						if message.ExitCode != 0 {
+							appendTerminal(fmt.Sprintf("[código de salida: %d]", message.ExitCode))
+						}
 						if message.Error != "" {
 							appendTerminal("Error del servidor: " + message.Error)
+						}
+						if message.Dir != "" {
+							currentDir = message.Dir
 						}
 						if message.ID == pendingCommandID {
 							wasBye := pendingCommand == "bye"
@@ -271,7 +285,7 @@ func main() {
 				commandInput.Enable()
 				executeButton.Enable()
 				connectionStatus.SetText(fmt.Sprintf("ONLINE | %s | período: %ds", address, period))
-				appendTerminal("Autenticación correcta. Escribe help para ver los diagnósticos permitidos.")
+				appendTerminal("Autenticación correcta. Escribe cualquier comando de Linux; 'bye' para salir.")
 				window.Canvas().Focus(commandInput)
 				readSession(session)
 			})
@@ -290,7 +304,7 @@ func main() {
 	)
 	connectionPanel := container.NewVBox(connectionFields, credentialFields, connectionStatus)
 
-	resourcePanel := container.NewVBox(
+	resourceHeader := container.NewVBox(
 		widget.NewLabel("MONITORIZACIÓN DE RECURSOS (Servidor Linux)"),
 		cpuLabel,
 		cpuBar,
@@ -301,11 +315,11 @@ func main() {
 		widget.NewSeparator(),
 		reportCount,
 		widget.NewLabel("Historial de reportes"),
-		container.NewScroll(history),
 	)
+	resourcePanel := container.NewBorder(resourceHeader, nil, nil, nil, historyScroll)
 	split := container.NewHSplit(
 		container.NewBorder(widget.NewLabel("Terminal"), nil, nil, nil, container.NewScroll(terminal)),
-		container.NewScroll(resourcePanel),
+		resourcePanel,
 	)
 	split.SetOffset(0.7)
 	commandBar := container.NewBorder(nil, nil, nil, executeButton, commandInput)

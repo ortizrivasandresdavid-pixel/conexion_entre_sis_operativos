@@ -20,7 +20,10 @@ type Message struct {
 	Error             string            `json:"error,omitempty"`
 	OK                bool              `json:"ok,omitempty"`
 	AttemptsRemaining int               `json:"attempts_remaining,omitempty"`
+	RetryAfterSeconds int               `json:"retry_after_seconds,omitempty"`
 	PeriodSeconds     int               `json:"period_seconds,omitempty"`
+	ExitCode          int               `json:"exit_code,omitempty"`
+	Dir               string            `json:"dir,omitempty"`
 	Metrics           *metrics.Snapshot `json:"metrics,omitempty"`
 }
 
@@ -30,7 +33,7 @@ type messageReader struct {
 
 func newMessageReader(reader io.Reader) *messageReader {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 4096), 1024*1024)
+	scanner.Buffer(make([]byte, 4096), 16*1024*1024)
 	return &messageReader{scanner: scanner}
 }
 
