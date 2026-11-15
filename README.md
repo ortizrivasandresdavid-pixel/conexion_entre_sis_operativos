@@ -171,11 +171,11 @@ La aplicación gráfica tiene fondo negro, texto verde monoespaciado en la termi
 
 La terminal de la GUI sigue automáticamente la salida nueva y el panel de reportes mantiene su propio desplazamiento, de modo que recibir métricas no mueve la terminal. Si se agotan los intentos de autenticación, se deshabilita el formulario y aparece un aviso modal; al cerrarlo, la aplicación termina.
 
-La GUI está en su propio módulo para que Fyne no cambie las dependencias del cliente de consola ni del servidor. En Windows, Fyne requiere CGo y un compilador C. Si usas MSYS2 en `C:\msys64`, configura MinGW64 en la misma ventana de PowerShell antes de ejecutar o compilar:
+La GUI está en su propio módulo para que Fyne no cambie las dependencias del cliente de consola ni del servidor. En Windows, Fyne requiere CGo y un compilador C. Si usas MSYS2 en `C:\msys64`, configura UCRT64 en la misma ventana de PowerShell antes de ejecutar o compilar:
 
 ```powershell
-$env:CC = 'C:\msys64\mingw64\bin\gcc.exe'
-$env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+$env:CC = 'C:\msys64\ucrt64\bin\gcc.exe'
+$env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
 $env:CGO_ENABLED = '1'
 ```
 
@@ -195,6 +195,78 @@ go -C .\src\opergui build -o ..\..\cliente-gui.exe .
 En la ventana, ingresa la IP del servidor, el puerto (por defecto `2306`), el período de reportes (por defecto `5` segundos) y las credenciales; luego selecciona **Conectar**. Tras autenticarte, escribe cualquier comando de Linux (`ls -la`, `df -h`, `cd /tmp`, `pwd`...) y presiona Enter o **Ejecutar**. El indicador antes de cada comando muestra el directorio de trabajo actual en el servidor, y las salidas con código distinto de cero se marcan con `[código de salida: N]`. Solo se permite un comando pendiente a la vez; los reportes periódicos siguen actualizando el panel lateral. Para cerrar la sesión, envía `bye`.
 
 La GUI y el cliente de consola son ejecutables separados. Los argumentos de consola siguen siendo compatibles (`cliente <IP-servidor> [puerto] [periodo-segundos]`); para la GUI, esos valores se ingresan en los campos de la ventana.
+
+## Conexión remota desde otra red (Cliente Externo)
+
+Si ejecutas el cliente desde otra casa o red distinta a la del servidor Debian, **no expongas ni redirijas el puerto TCP 2306 directamente a Internet**. El protocolo de esta aplicación no cifra el tráfico, por lo que los comandos, las respuestas y las métricas podrían ser observados. Usa una VPN privada como Tailscale para conectar ambos equipos; la VPN cifra el trayecto entre ellos.
+
+### 1. Instalar y conectar Tailscale en ambos equipos
+
+1. En Debian, instala Tailscale siguiendo la [guía oficial para Linux](https://tailscale.com/kb/1031/install-linux) y conéctalo a tu tailnet:
+
+   ```bash
+   sudo tailscale up
+   ```
+
+   Completa el inicio de sesión indicado. En Windows, instala Tailscale desde su [página oficial](https://tailscale.com/download/windows), inicia sesión con la misma cuenta/tailnet y confirma que ambos dispositivos aparezcan conectados.
+2. En Debian, consulta la IP de Tailscale del **servidor**:
+
+   ```bash
+   tailscale ip -4
+   ```
+
+   También puedes revisar el estado de los dispositivos con `tailscale status`.
+3. En PowerShell de Windows, consulta la IP de Tailscale del **cliente**:
+
+   ```powershell
+   tailscale ip -4
+   ```
+
+   Mantén la VPN conectada en ambos equipos mientras uses la aplicación.
+
+### 2. Autorizar el cliente en Debian
+
+Edita `servidor/server.conf` en el servidor y configura `AllowedClientIP` con la IP de Tailscale del **cliente Windows** obtenida en el paso anterior. Este valor autoriza el origen de la conexión; no es la IP del servidor que usarás para conectarte. Por ejemplo:
+
+```ini
+ListenIP=0.0.0.0
+Port=2306
+AllowedClientIP=100.83.168.60
+MaxAuthAttempts=3
+UsersFile=users.conf
+DefaultReportPeriodSeconds=5
+MaxReportPeriodSeconds=60
+```
+
+Reemplaza `100.83.168.60` por la IP real del cliente. También puedes autorizar una subred Tailscale usando su notación CIDR, si necesitas permitir varios clientes. Conserva los demás parámetros requeridos que ya tenga tu archivo. `ListenIP=0.0.0.0` permite escuchar en las interfaces del servidor; configura el firewall de Debian para permitir TCP 2306 solo desde la VPN y no crees una regla de redirección del puerto en el router. Si el servidor ya estaba ejecutándose, detenlo con `Ctrl+C` y vuelve a iniciarlo desde la raíz del proyecto para que lea la nueva configuración:
+
+```bash
+go run ./servidor -config servidor/server.conf
+```
+
+### 3. Conectar desde Windows
+
+Desde PowerShell, en la raíz del proyecto, compila el cliente de consola:
+
+```powershell
+go build -o cliente.exe .\cliente
+```
+
+Conéctate usando la IP de Tailscale del **servidor Debian**:
+
+```powershell
+.\cliente.exe <IP_TAILSCALE_SERVIDOR>
+```
+
+Sustituye el marcador por la IP real, por ejemplo `.\cliente.exe 100.83.168.60`. El cliente usa TCP 2306 por defecto.
+
+Para iniciar la interfaz gráfica Fyne desde la raíz del proyecto:
+
+```powershell
+go -C .\src\opergui run .
+```
+
+En la ventana, ingresa la IP de Tailscale del servidor y el puerto `2306`. Si vas a compilar o ejecutar la GUI localmente en Windows, configura primero `CC`, `PATH` y `CGO_ENABLED` para MSYS2 UCRT64 como se indica en la sección **Usar la interfaz gráfica Fyne**. En las opciones de Tailscale de la organización, asegúrate también de que las reglas de acceso permitan que el cliente alcance el servidor.
 
 ## Ejecutar el shell local
 
