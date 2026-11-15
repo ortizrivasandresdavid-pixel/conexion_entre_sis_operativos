@@ -285,3 +285,46 @@ go test ./cliente ./servidor ./src/login ./src/metrics ./src/shell ./src/sockets
 ```
 
 Las pruebas de `src/shell` ejecutan `bash`/`sh`, así que se omiten en Windows o donde no haya una shell POSIX disponible.
+
+## Preparar dependencias y ejecutables
+
+Los scripts de preparación instalan Go y Tailscale si hacen falta, descargan las dependencias de Go y compilan los ejecutables. La conexión de Tailscale requiere iniciar sesión manualmente en cada equipo; el script no cambia la configuración de red ni abre puertos.
+
+### Windows: cliente de consola y GUI
+
+Abre PowerShell como administrador desde la raíz del proyecto y ejecuta:
+
+```powershell
+.\preparar-windows.ps1
+```
+
+Si PowerShell bloquea la ejecución del archivo, permite scripts solo en esa ventana y vuelve a ejecutarlo:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\preparar-windows.ps1
+```
+
+El script instala Go, Tailscale y MSYS2 con GCC UCRT64, configura `CC`, `PATH` y `CGO_ENABLED` durante la compilación y crea:
+
+- `dist\windows\cliente.exe`
+- `dist\windows\cliente-gui.exe`
+
+Si Windows solicita reiniciar o cerrar sesión después de instalar una herramienta, hazlo y vuelve a ejecutar el script.
+
+### Debian: servidor
+
+Desde la raíz del proyecto ejecuta:
+
+```bash
+bash ./preparar-debian.sh
+```
+
+El script instala Go compatible con el proyecto y Tailscale si hacen falta, y crea `dist/debian/` con el ejecutable `servidor` y copias de `server.conf` y `users.conf`. Edita `dist/debian/server.conf` para autorizar la IP VPN del cliente; después inicia sesión en Tailscale y ejecuta:
+
+```bash
+cd dist/debian
+./servidor -config server.conf
+```
+
+El cliente y el servidor siguen necesitando conectividad por la VPN. No publiques el puerto TCP 2306 directamente en Internet.

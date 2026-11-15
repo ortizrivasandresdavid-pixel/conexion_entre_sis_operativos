@@ -6,3 +6,4 @@
 *.out
 /.gocache/
 /.tmp/
+/dist/
