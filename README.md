@@ -1,6 +1,6 @@
 # Administración y monitorización de laboratorio en Go
 
-Ejemplo educativo de cliente Windows y servidor Debian/Linux mediante TCP. El cliente autentica al usuario, solicita diagnósticos permitidos y muestra métricas periódicas sin detener la entrada interactiva.
+Ejemplo educativo de cliente Windows y servidor Debian/Linux mediante TCP. El cliente ofrece una consola de texto y una interfaz gráfica Fyne; ambas autentican al usuario, solicitan diagnósticos permitidos y muestran métricas periódicas.
 
 ## Alcance y seguridad
 
@@ -80,9 +80,9 @@ go run ./servidor -config servidor/server.conf
 
 El servidor escucha en `ListenIP:Port`. Para detenerlo, usa `Ctrl+C`.
 
-## Usar la interfaz del cliente (consola interactiva)
+## Usar el cliente de consola
 
-El proyecto no incluye una interfaz gráfica. La interfaz disponible es la consola de Windows: desde allí se inicia la conexión, se ingresan las credenciales, se escriben los diagnósticos y se reciben las métricas.
+La consola de Windows permite iniciar la conexión, ingresar las credenciales, escribir diagnósticos y recibir métricas.
 
 ### 1. Preparar el servidor
 
@@ -151,6 +151,35 @@ Para compilar el ejecutable de Windows desde Debian, si lo necesitas:
 ```bash
 GOOS=windows GOARCH=amd64 go build -o cliente.exe ./cliente
 ```
+
+## Usar la interfaz gráfica Fyne
+
+La aplicación gráfica tiene apariencia de terminal e incluye campos de IP, puerto, período, usuario y contraseña; una salida de comandos, un campo para enviar diagnósticos, barras de CPU/memoria/disco y un contador e historial de reportes. La autenticación y el intercambio de mensajes reutilizan el protocolo TCP de `src/sockets`; los reportes se procesan concurrentemente y se reflejan en la ventana sin bloquearla.
+
+La GUI está en su propio módulo para que Fyne no cambie las dependencias del cliente de consola ni del servidor. En Windows, Fyne requiere CGo y un compilador C. Si usas MSYS2 en `C:\msys64`, configura MinGW64 en la misma ventana de PowerShell antes de ejecutar o compilar:
+
+```powershell
+$env:CC = 'C:\msys64\mingw64\bin\gcc.exe'
+$env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+$env:CGO_ENABLED = '1'
+```
+
+Desde la raíz del proyecto, ejecútala en desarrollo:
+
+```powershell
+go -C .\src\opergui run .
+```
+
+O compílala en Windows:
+
+```powershell
+go -C .\src\opergui build -o ..\..\cliente-gui.exe .
+.\cliente-gui.exe
+```
+
+En la ventana, ingresa la IP del servidor, el puerto (por defecto `2306`), el período de reportes (por defecto `5` segundos) y las credenciales; luego selecciona **Conectar**. Tras autenticarte, escribe un comando permitido como `help` o `df -h` y presiona Enter o **Ejecutar**. Solo se permite un comando pendiente a la vez; los reportes periódicos siguen actualizando el panel lateral. Para cerrar la sesión, envía `bye`.
+
+La GUI y el cliente de consola son ejecutables separados. Los argumentos de consola siguen siendo compatibles (`cliente <IP-servidor> [puerto] [periodo-segundos]`); para la GUI, esos valores se ingresan en los campos de la ventana.
 
 ## Ejecutar el shell de diagnóstico local
 
