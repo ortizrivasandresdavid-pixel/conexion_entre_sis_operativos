@@ -320,6 +320,8 @@ Desde la raíz del proyecto ejecuta:
 bash ./preparar-debian.sh
 ```
 
+También puedes usar **Ejecutar como un programa** desde el administrador de archivos. El script abrirá una terminal y solicitará autorización de administrador mediante `pkexec`; no hace falta agregar tu usuario al grupo `sudo`. La carpeta generada quedará a nombre de tu usuario. Si no aparece la solicitud de autorización, ejecuta el script desde una terminal o pide al administrador que habilite PolicyKit.
+
 El script instala Go compatible con el proyecto y Tailscale si hacen falta, y crea `dist/debian/` con el ejecutable `servidor` y copias de `server.conf` y `users.conf`. Edita `dist/debian/server.conf` para autorizar la IP VPN del cliente; después inicia sesión en Tailscale y ejecuta:
 
 ```bash
