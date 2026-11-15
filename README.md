@@ -12,7 +12,7 @@ Esta funcionalidad es equivalente a dar una shell remota, por lo que debes trata
 
 - **La conexión TCP no está cifrada.** Los comandos, sus salidas y las métricas pueden ser observados si el tráfico sale de una red confiable. Usa una VPN privada (WireGuard, Tailscale, etc.) entre servidor y clientes y no publiques ni redirijas el puerto TCP a Internet.
 - **El servidor ejecuta los comandos con sus propios permisos.** Ejecútalo con una cuenta de laboratorio sin privilegios, nunca como `root` ni con `sudo` permanente. Quien se autentique tendrá los mismos permisos que el proceso del servidor.
-- **Autenticación y control de acceso:** desafío aleatorio por intento y prueba basada en SHA-256 (la contraseña no viaja en claro), IP o CIDR autorizado y bloqueo temporal de la IP tras varios fallos.
+- **Autenticación y control de acceso:** desafío aleatorio por intento y prueba basada en SHA-256 (la contraseña no viaja en claro), IP o CIDR autorizado y backoff progresivo por IP tras fallos. El servidor informa el tiempo de espera restante; al agotar los intentos responde `AUTH_LOCKED` y cierra la conexión. Cuando vence la penalización, el contador de esa IP se restablece.
 
 Límites pensados para no bloquear el protocolo ni la memoria del servidor:
 
@@ -122,7 +122,7 @@ Password:
 
 Escribe la contraseña y presiona Enter; no se mostrará mientras la escribes. Para probar en un laboratorio recién clonado, el archivo de ejemplo incluye `admin` / `linux`. Cambia esa cuenta antes de usarlo fuera de una práctica local.
 
-Después de autenticarte puedes escribir cualquier comando de Linux. Por ejemplo:
+Después de autenticarte puedes escribir cualquier comando de Linux. El historial se mantiene en memoria por conexión: `history` muestra los comandos de la sesión actual (no el `.bash_history` del sistema) y `history -c` lo limpia. Por ejemplo:
 
 ```text
 Autenticación correcta. Escribe cualquier comando de Linux; 'bye' para salir.
@@ -168,6 +168,8 @@ ssh usuario@10.8.0.1
 ## Usar la interfaz gráfica Fyne
 
 La aplicación gráfica tiene fondo negro, texto verde monoespaciado en la terminal y el historial de reportes. Incluye campos de IP, puerto, período, usuario y contraseña; salida de comandos, barras de CPU/memoria/disco, contador e historial con desplazamiento automático. La autenticación y el intercambio de mensajes reutilizan el protocolo TCP de `src/sockets`; los reportes se procesan concurrentemente y se reflejan en la ventana sin bloquearla.
+
+La terminal de la GUI sigue automáticamente la salida nueva y el panel de reportes mantiene su propio desplazamiento, de modo que recibir métricas no mueve la terminal. Si se agotan los intentos de autenticación, se deshabilita el formulario y aparece un aviso modal; al cerrarlo, la aplicación termina.
 
 La GUI está en su propio módulo para que Fyne no cambie las dependencias del cliente de consola ni del servidor. En Windows, Fyne requiere CGo y un compilador C. Si usas MSYS2 en `C:\msys64`, configura MinGW64 en la misma ventana de PowerShell antes de ejecutar o compilar:
 
