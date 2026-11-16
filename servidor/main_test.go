@@ -39,3 +39,65 @@ func TestLoadConfigRejectsUnknownSetting(t *testing.T) {
 		t.Fatal("unknown configuration setting was accepted")
 	}
 }
+
+func TestLoadConfigUsesDefaultLogSettings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.conf")
+	content := "ListenIP=127.0.0.1\n" +
+		"Port=2306\n" +
+		"AllowedClientIP=127.0.0.1\n" +
+		"MaxAuthAttempts=3\n" +
+		"UsersFile=users.conf\n" +
+		"DefaultReportPeriodSeconds=5\n" +
+		"MaxReportPeriodSeconds=60\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.LogFile != defaultLogPath {
+		t.Fatalf("LogFile = %q, want %q", config.LogFile, defaultLogPath)
+	}
+	if config.LogMaxSizeMB != defaultLogMaxSizeMB || config.LogBackups != defaultLogBackups {
+		t.Fatalf("log defaults = (%d, %d), want (%d, %d)",
+			config.LogMaxSizeMB, config.LogBackups, defaultLogMaxSizeMB, defaultLogBackups)
+	}
+}
+
+func TestLoadConfigResolvesRelativeLogFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.conf")
+	content := "ListenIP=127.0.0.1\n" +
+		"Port=2306\n" +
+		"AllowedClientIP=127.0.0.1\n" +
+		"MaxAuthAttempts=3\n" +
+		"UsersFile=users.conf\n" +
+		"DefaultReportPeriodSeconds=5\n" +
+		"MaxReportPeriodSeconds=60\n" +
+		"LogFile=logs/servidor.log\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	config, err := loadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "logs", "servidor.log")
+	if config.LogFile != want {
+		t.Fatalf("LogFile = %q, want %q", config.LogFile, want)
+	}
+}
+
+func TestResolveConfigPathHonorsExplicitPath(t *testing.T) {
+	path, err := resolveConfigPath("ruta/elegida.conf", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "ruta/elegida.conf" {
+		t.Fatalf("path = %q, want the explicit value", path)
+	}
+}

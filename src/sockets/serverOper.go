@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -25,6 +25,9 @@ type ServerConfig struct {
 	UsersFile                  string
 	DefaultReportPeriodSeconds int
 	MaxReportPeriodSeconds     int
+	LogFile                    string
+	LogMaxSizeMB               int
+	LogBackups                 int
 }
 
 func RunServer(ctx context.Context, config ServerConfig) error {
@@ -55,6 +58,7 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 			return true
 		})
 	})
+	defer slog.Info("servidor detenido")
 	defer func() {
 		stopClose()
 		_ = listener.Close()
@@ -65,7 +69,10 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 		handlers.Wait()
 	}()
 
-	log.Printf("Servidor escuchando en %s; IP permitida: %s", listener.Addr(), config.AllowedClientIP)
+	slog.Info("servidor escuchando",
+		"direccion", listener.Addr().String(),
+		"ip_permitida", config.AllowedClientIP,
+	)
 	slots := make(chan struct{}, 32)
 	for {
 		conn, err := listener.Accept()
@@ -73,6 +80,7 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 			if ctx.Err() != nil {
 				return nil
 			}
+			slog.Error("error al aceptar conexión", "error", err)
 			return fmt.Errorf("aceptar conexión: %w", err)
 		}
 		if ctx.Err() != nil {
@@ -88,12 +96,17 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 				defer func() { <-slots }()
 				defer activeConnections.Delete(conn)
 				if err := serveConnection(ctx, conn, config, users, attemptLimiter); err != nil {
-					log.Printf("Conexión %s: %v", conn.RemoteAddr(), err)
+					slog.Warn("conexión finalizada con error",
+						"remota", conn.RemoteAddr().String(),
+						"error", err,
+					)
 				}
 			}()
 		default:
 			_ = conn.Close()
-			log.Printf("Se rechazó %s: límite de conexiones alcanzado", conn.RemoteAddr())
+			slog.Warn("conexión rechazada: límite de conexiones alcanzado",
+				"remota", conn.RemoteAddr().String(),
+			)
 		}
 	}
 }
@@ -139,8 +152,11 @@ func serveConnection(
 		return err
 	}
 	if !allowed(remoteIP) {
+		slog.Warn("conexión rechazada: IP no autorizada", "ip", remoteIP.String())
 		return fmt.Errorf("IP no autorizada: %s", remoteIP)
 	}
+	slog.Info("conexión entrante", "ip", remoteIP.String())
+	defer slog.Info("conexión cerrada", "ip", remoteIP.String())
 
 	reader := newMessageReader(conn)
 	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
@@ -152,13 +168,12 @@ func serveConnection(
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return fmt.Errorf("limpiar tiempo límite de conexión: %w", err)
 	}
-	log.Printf("Cliente autenticado: %s", remoteIP)
 	terminal, err := shell.NewSession()
 	if err != nil {
 		return fmt.Errorf("preparar shell remoto: %w", err)
 	}
-	log.Printf("Sesión de shell de %s iniciada en %s", remoteIP, terminal.Dir())
-	return runSession(ctx, conn, reader, config, terminal)
+	slog.Info("sesión de shell iniciada", "ip", remoteIP.String(), "directorio", terminal.Dir())
+	return runSession(ctx, conn, reader, config, terminal, remoteIP.String())
 }
 
 func authenticateServer(
@@ -179,6 +194,12 @@ func authenticateServer(
 				code = "AUTH_LOCKED"
 				message = "se agotaron los intentos de autenticación"
 			}
+			slog.Warn("autenticación bloqueada",
+				"ip", clientIP,
+				"codigo", code,
+				"intentos_restantes", remaining,
+				"reintentar_en_s", durationSeconds(retryAfter),
+			)
 			if err := sendAuthResult(conn, Message{
 				Code:              code,
 				Error:             message,
@@ -212,6 +233,10 @@ func authenticateServer(
 			return err
 		}
 		if request.Type != "authenticate" || request.Username == "" {
+			slog.Warn("solicitud de autenticación inválida",
+				"ip", clientIP,
+				"tipo", request.Type,
+			)
 			return fmt.Errorf("solicitud de autenticación inválida")
 		}
 
@@ -223,6 +248,13 @@ func authenticateServer(
 				code = "AUTH_LOCKED"
 				message = "se agotaron los intentos de autenticación"
 			}
+			slog.Warn("autenticación bloqueada",
+				"ip", clientIP,
+				"usuario", request.Username,
+				"codigo", code,
+				"intentos_restantes", remaining,
+				"reintentar_en_s", durationSeconds(retryAfter),
+			)
 			if err := sendAuthResult(conn, Message{
 				Code:              code,
 				Error:             message,
@@ -246,6 +278,10 @@ func authenticateServer(
 		ok := login.VerifyProof(users, request.Username, nonce, request.Proof)
 		if ok {
 			attemptLimiter.RecordSuccess(clientIP)
+			slog.Info("autenticación correcta",
+				"ip", clientIP,
+				"usuario", request.Username,
+			)
 			return sendAuthResult(conn, Message{OK: true, AttemptsRemaining: maxAttempts})
 		}
 
@@ -259,6 +295,13 @@ func authenticateServer(
 			code = "AUTH_LOCKED"
 			message = "se agotaron los intentos de autenticación"
 		}
+		slog.Warn("autenticación fallida",
+			"ip", clientIP,
+			"usuario", request.Username,
+			"codigo", code,
+			"intentos_restantes", remaining,
+			"reintentar_en_s", durationSeconds(retryAfter),
+		)
 		if err := sendAuthResult(conn, Message{
 			Code:              code,
 			Error:             message,
@@ -313,6 +356,8 @@ type commandResult struct {
 	output   string
 	exitCode int
 	dir      string
+	command  string
+	duration time.Duration
 	err      error
 }
 
@@ -322,9 +367,11 @@ func runSession(
 	reader *messageReader,
 	config ServerConfig,
 	terminal *shell.Session,
+	clientIP string,
 ) error {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer slog.Info("sesión finalizada", "ip", clientIP)
 
 	incoming := make(chan readEvent, 1)
 	go func() {
@@ -374,6 +421,7 @@ func runSession(
 					continue
 				}
 				ticker.Reset(time.Duration(seconds) * time.Second)
+				slog.Info("período de reporte cambiado", "ip", clientIP, "segundos", seconds)
 				if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, OK: true, Output: fmt.Sprintf("Período de reporte: %d segundos", seconds)}); err != nil {
 					return err
 				}
@@ -385,6 +433,7 @@ func runSession(
 					}
 					continue
 				}
+				slog.Info("comando recibido", "ip", clientIP, "comando", shortCommand(command))
 				if output, handled := sessionHistoryCommand(command, &sessionHistory); handled {
 					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, OK: true, Output: output}); err != nil {
 						return err
@@ -393,6 +442,7 @@ func runSession(
 				}
 				if command == "bye" {
 					sessionHistory = append(sessionHistory, command)
+					slog.Info("cierre de sesión solicitado", "ip", clientIP)
 					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, OK: true, Output: "Sesión cerrada"}); err != nil {
 						return err
 					}
@@ -400,6 +450,7 @@ func runSession(
 				}
 				sessionHistory = append(sessionHistory, command)
 				commandRunning = true
+				started := time.Now()
 				go func(id uint64, command string) {
 					output, err := terminal.Execute(sessionCtx, command)
 					select {
@@ -408,18 +459,31 @@ func runSession(
 						output:   output.Output,
 						exitCode: output.ExitCode,
 						dir:      output.Dir,
+						command:  command,
+						duration: time.Since(started),
 						err:      err,
 					}:
 					case <-sessionCtx.Done():
 					}
 				}(event.message.ID, event.message.Command)
 			default:
+				slog.Warn("tipo de solicitud no reconocido", "ip", clientIP, "tipo", event.message.Type)
 				if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, Error: "tipo de solicitud no reconocido"}); err != nil {
 					return err
 				}
 			}
 		case result := <-results:
 			commandRunning = false
+			attributes := []any{
+				"ip", clientIP,
+				"comando", shortCommand(result.command),
+				"codigo_salida", result.exitCode,
+				"duracion_ms", result.duration.Milliseconds(),
+			}
+			if result.err != nil {
+				attributes = append(attributes, "error", result.err)
+			}
+			slog.Info("comando finalizado", attributes...)
 			response := Message{
 				Type:     "command_result",
 				ID:       result.id,
@@ -464,6 +528,14 @@ func sessionHistoryCommand(command string, history *[]string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func shortCommand(command string) string {
+	const maxBytes = 1024
+	if len(command) <= maxBytes {
+		return command
+	}
+	return command[:maxBytes] + "...[comando truncado en el log]"
 }
 
 func parseAllowedIP(value string) (func(net.IP) bool, error) {

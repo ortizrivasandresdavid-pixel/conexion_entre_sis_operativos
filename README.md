@@ -29,23 +29,49 @@ El servidor verifica la IP o CIDR autorizada y limita los intentos fallidos y el
 - Cliente Windows con acceso TCP al servidor.
 - Puerto TCP 2306 permitido en el firewall entre ambos equipos.
 
-## Archivos de configuración de ejemplo
+## Configuración centralizada y logs
+
+El servidor busca su configuración por defecto en `/etc/configProyecto.conf`. La ruta se puede cambiar con `-config`; `-users` y `-log` permiten sobrescribir `UsersFile` y `LogFile` sin editar el archivo. Las rutas relativas de `UsersFile` y `LogFile` se resuelven respecto del directorio del archivo de configuración; las de `-users` y `-log`, respecto del directorio actual.
+
+Para desarrollo, `servidor/server.conf` sigue siendo válido: si no se indica `-config` y `/etc/configProyecto.conf` no existe, el servidor intenta `servidor/server.conf` desde la raíz del repositorio. Para producción hay plantillas listas para copiar en `deploy/`:
+
+- `deploy/configProyecto.conf` → `/etc/configProyecto.conf`
+- `deploy/configProyecto.users` → `/etc/configProyecto.users`
+- `deploy/servidor-operativos.service` → `/etc/systemd/system/servidor-operativos.service`
 
 `servidor/server.conf` contiene:
 
 ```ini
 ListenIP=0.0.0.0
 Port=2306
-AllowedClientIP=127.0.0.1
+AllowedClientIP=100.66.232.76
 MaxAuthAttempts=3
 UsersFile=users.conf
 DefaultReportPeriodSeconds=5
 MaxReportPeriodSeconds=60
+LogFile=servidor.log
+LogMaxSizeMB=10
+LogBackups=3
 ```
 
 Para acceso por VPN, cambia `AllowedClientIP` por la IP VPN de un cliente o por la subred privada asignada a los clientes autorizados. `ListenIP` es la IP local del servidor; `0.0.0.0` escucha en todas sus interfaces, así que restringe el puerto 2306 con el firewall para permitirlo solo desde la interfaz o subred VPN.
 
-`servidor/users.conf` trae una cuenta de laboratorio:
+`deploy/configProyecto.conf` ya apunta a las rutas centralizadas:
+
+```ini
+ListenIP=0.0.0.0
+Port=2306
+AllowedClientIP=127.0.0.1
+MaxAuthAttempts=3
+UsersFile=/etc/configProyecto.users
+DefaultReportPeriodSeconds=5
+MaxReportPeriodSeconds=60
+LogFile=/var/log/proyecto-operativos/servidor.log
+LogMaxSizeMB=10
+LogBackups=5
+```
+
+`servidor/users.conf` y `deploy/configProyecto.users` traen una cuenta de laboratorio:
 
 ```text
 Usuario: admin
@@ -58,15 +84,31 @@ El archivo almacena `usuario:SHA256(password)`, no la contraseña. Genera hashes
 printf %s 'TuPassword' | sha256sum
 ```
 
-Agrega una línea `usuario:hash_de_64_caracteres` a `users.conf`. No reutilices la cuenta ni la contraseña de ejemplo.
+Agrega una línea `usuario:hash_de_64_caracteres` al archivo indicado por `UsersFile`. No reutilices la cuenta ni la contraseña de ejemplo.
+
+### Registro persistente y rotación
+
+El servidor escribe cada evento en dos destinos:
+
+- **stdout**, que systemd recoge en journald (`journalctl -u servidor-operativos`).
+- **archivo persistente**, indicado por `LogFile` (por defecto `/var/log/proyecto-operativos/servidor.log`).
+
+Cada línea es un registro estructurado de `log/slog`, por ejemplo:
+
+```text
+time=2026-11-16T15:00:00.000-05:00 level=INFO msg="comando recibido" ip=100.66.232.76 comando="ls -la"
+```
+
+Se registran conexiones entrantes y cerradas, IP no autorizada, autenticaciones correctas y fallidas (usuario, intentos restantes y espera), bloqueos, comandos recibidos y finalizados (código de salida y duración) y el arranque/parada del servidor. La salida de los comandos no se guarda en el log. Como el texto de cada comando sí se registra, evita pasar secretos en la línea de comandos. El archivo rota al superar `LogMaxSizeMB`; se conservan `LogBackups` archivos anteriores como `servidor.log.1`, `servidor.log.2`, etc. Si el archivo no se puede abrir y no se indicó `-log`, el servidor continúa solo con stdout y muestra un aviso.
 
 ## Ejecutar en Debian (servidor)
 
 Desde la raíz del proyecto:
 
 ```bash
-go build -o servidor ./servidor
-./servidor -config servidor/server.conf
+mkdir -p dist/linux
+go build -o dist/linux/servidor-operativos ./servidor
+./dist/linux/servidor-operativos -config servidor/server.conf
 ```
 
 También se puede iniciar directamente:
@@ -76,6 +118,76 @@ go run ./servidor -config servidor/server.conf
 ```
 
 El servidor escucha en `ListenIP:Port` y arranca su shell en el directorio desde el que se lanzó. Para detenerlo, usa `Ctrl+C`.
+
+## Instalar como servicio systemd (Debian)
+
+La unidad incluida usa un usuario dedicado `operativos` (sin shell de inicio de sesión), arranca `/usr/local/bin/servidor-operativos` y lee `/etc/configProyecto.conf`. No se recomienda `nobody`: un usuario dedicado permite dar permisos solo a sus directorios de estado y logs.
+
+### 1. Crear el usuario y los directorios
+
+```bash
+getent group operativos >/dev/null || sudo groupadd --system operativos
+id -u operativos >/dev/null 2>&1 || sudo useradd --system \
+  --gid operativos \
+  --home-dir /var/lib/servidor-operativos \
+  --no-create-home \
+  --shell /usr/sbin/nologin \
+  operativos
+
+sudo install -d -o operativos -g operativos -m 0750 \
+  /var/lib/servidor-operativos /var/log/proyecto-operativos
+```
+
+### 2. Compilar e instalar el binario
+
+```bash
+mkdir -p dist/linux
+go build -trimpath -ldflags="-s -w" -o dist/linux/servidor-operativos ./servidor
+sudo install -o root -g root -m 0755 dist/linux/servidor-operativos /usr/local/bin/servidor-operativos
+```
+
+### 3. Instalar la configuración
+
+```bash
+sudo install -o root -g operativos -m 0640 deploy/configProyecto.conf /etc/configProyecto.conf
+sudo install -o root -g operativos -m 0640 deploy/configProyecto.users /etc/configProyecto.users
+sudoedit /etc/configProyecto.conf
+```
+
+Cambia `AllowedClientIP` por la IP o red VPN del cliente antes de arrancar el servicio.
+
+### 4. Instalar y habilitar la unidad
+
+```bash
+sudo install -o root -g root -m 0644 deploy/servidor-operativos.service /etc/systemd/system/servidor-operativos.service
+sudo systemd-analyze verify /etc/systemd/system/servidor-operativos.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now servidor-operativos
+```
+
+### 5. Verificar el servicio y los logs
+
+```bash
+systemctl status servidor-operativos --no-pager
+systemctl is-enabled servidor-operativos
+journalctl -u servidor-operativos -n 50 --no-pager
+sudo tail -f /var/log/proyecto-operativos/servidor.log
+sudo ss -ltnp 'sport = :2306'
+pgrep -u operativos -af servidor-operativos
+sudo systemctl show servidor-operativos -p User --value
+```
+
+`systemctl status` debe mostrar `active (running)`; `ss` debe mostrar el puerto 2306 escuchando y `pgrep`/`systemctl show` deben confirmar que el proceso corre como `operativos`. En el log aparecerá, entre otras, la línea `msg="servidor escuchando"`.
+
+### 6. Operación diaria
+
+```bash
+sudo systemctl restart servidor-operativos   # tras editar /etc/configProyecto.conf
+sudo systemctl stop servidor-operativos
+sudo systemctl disable --now servidor-operativos
+```
+
+La unidad aplica `ProtectSystem=strict`, `NoNewPrivileges=true`, `CapabilityBoundingSet=` vacío y `PrivateTmp=true`. Los comandos remotos se ejecutan como `operativos` y solo pueden escribir en `/var/lib/servidor-operativos`, en su `/tmp` privado y en `/var/log/proyecto-operativos`; el resto del sistema queda en solo lectura. Si un comando necesita otra ruta, añádela de forma consciente con `ReadWritePaths=` en la unidad. El servidor nunca debe ejecutarse como `root`: quien se autentique tendría los mismos permisos que el proceso.
 
 ## Usar el cliente de consola
 
@@ -93,7 +205,7 @@ Inicia el servidor desde la raíz del proyecto:
 go run ./servidor -config servidor/server.conf
 ```
 
-Déjalo ejecutándose mientras uses el cliente. Si cambias `UsersFile`, recuerda que su ruta relativa se resuelve respecto de la carpeta `servidor`.
+Déjalo ejecutándose mientras uses el cliente. Si cambias `UsersFile`, recuerda que su ruta relativa se resuelve respecto del archivo de configuración.
 
 ### 2. Iniciar el cliente en Windows
 
@@ -281,7 +393,7 @@ También ejecuta cualquier comando de tu propia shell y conserva el directorio d
 ## Pruebas
 
 ```bash
-go test ./cliente ./servidor ./src/login ./src/metrics ./src/shell ./src/sockets
+go test ./cliente ./servidor ./src/logging ./src/login ./src/metrics ./src/shell ./src/sockets
 ```
 
 Las pruebas de `src/shell` ejecutan `bash`/`sh`, así que se omiten en Windows o donde no haya una shell POSIX disponible.
@@ -322,12 +434,12 @@ bash ./preparar-debian.sh
 
 También puedes usar **Ejecutar como un programa** desde el administrador de archivos. El script abrirá una terminal y solicitará autorización de administrador mediante `pkexec`; no hace falta agregar tu usuario al grupo `sudo`. Si no aparece la solicitud de autorización, ejecútalo desde una terminal o pide al administrador que habilite PolicyKit. Este script solo instala/verifica dependencias; no compila ni inicia el servidor.
 
-Configura `servidor/server.conf` para autorizar la IP VPN del cliente y luego inicia el servidor con el lanzador:
+Configura `servidor/server.conf` (o `/etc/configProyecto.conf` si ya instalaste el servicio) para autorizar la IP VPN del cliente y luego inicia el servidor con el lanzador:
 
 ```bash
 bash ./iniciar-servidor-debian.sh
 ```
 
-El lanzador ejecuta `go run ./servidor` en una terminal y mantiene el servidor activo hasta detenerlo con `Ctrl+C`. También puedes usar **Ejecutar como un programa** sobre el lanzador. Inicia sesión en Tailscale antes de conectar el cliente.
+El lanzador usa `/etc/configProyecto.conf` si existe; si no, cae en `servidor/server.conf`. Puedes forzar otra ruta con `OPERATIVOS_CONFIG=/ruta/config.conf bash ./iniciar-servidor-debian.sh`. Ejecuta `go run ./servidor` en una terminal y mantiene el servidor activo hasta detenerlo con `Ctrl+C`. También puedes usar **Ejecutar como un programa** sobre el lanzador. Inicia sesión en Tailscale antes de conectar el cliente.
 
 El cliente y el servidor siguen necesitando conectividad por la VPN. No publiques el puerto TCP 2306 directamente en Internet.

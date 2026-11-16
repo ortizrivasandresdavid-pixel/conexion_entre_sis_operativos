@@ -54,4 +54,11 @@ if [[ -z "$GO_BIN" ]]; then
 fi
 
 cd "$ROOT_DIR"
-exec "$GO_BIN" run ./servidor -config "$ROOT_DIR/servidor/server.conf" "$@"
+
+CONFIG_PATH="${OPERATIVOS_CONFIG:-/etc/configProyecto.conf}"
+if [[ ! -r "$CONFIG_PATH" ]]; then
+    CONFIG_PATH="$ROOT_DIR/servidor/server.conf"
+    echo "Usando configuración de desarrollo: $CONFIG_PATH"
+fi
+
+exec "$GO_BIN" run ./servidor -config "$CONFIG_PATH" "$@"

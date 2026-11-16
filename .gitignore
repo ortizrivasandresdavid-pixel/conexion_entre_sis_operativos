@@ -4,6 +4,8 @@
 *.exe
 *.test
 *.out
+*.log
+*.log.*
 /.gocache/
 /.tmp/
 /dist/
