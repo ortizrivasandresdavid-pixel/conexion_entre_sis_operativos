@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+const (
+	// rootFilesystem fija la medición a la partición raíz del servidor.
+	rootFilesystem = "/"
+	bytesPerGB     = 1024 * 1024 * 1024
+)
+
 type Collector struct {
 	previousTotal uint64
 	previousIdle  uint64
@@ -43,12 +49,10 @@ func (c *Collector) Snapshot() (Snapshot, error) {
 		return Snapshot{}, err
 	}
 
-	var disk syscall.Statfs_t
-	if err := syscall.Statfs("/", &disk); err != nil {
-		return Snapshot{}, fmt.Errorf("leer espacio en disco: %w", err)
+	disk, err := readRootDiskUsage()
+	if err != nil {
+		return Snapshot{}, err
 	}
-	diskTotalBytes := disk.Blocks * uint64(disk.Bsize)
-	diskFreeBytes := disk.Bavail * uint64(disk.Bsize)
 
 	return Snapshot{
 		Timestamp:       time.Now().UTC().Format(time.RFC3339),
@@ -56,8 +60,37 @@ func (c *Collector) Snapshot() (Snapshot, error) {
 		ActiveProcesses: processes,
 		MemoryTotalMB:   totalMemory / 1024,
 		MemoryUsedMB:    (totalMemory - availableMemory) / 1024,
-		DiskTotalGB:     diskTotalBytes / (1024 * 1024 * 1024),
-		DiskUsedGB:      (diskTotalBytes - diskFreeBytes) / (1024 * 1024 * 1024),
+		DiskTotalGB:     disk.totalBytes / bytesPerGB,
+		DiskUsedGB:      disk.usedBytes / bytesPerGB,
+	}, nil
+}
+
+type diskUsage struct {
+	totalBytes uint64
+	usedBytes  uint64
+}
+
+// readRootDiskUsage mide exclusivamente la partición raíz ("/") mediante
+// syscall.Statfs_t. No usa el directorio de trabajo ni rutas configurables,
+// para que el reporte siempre describa el mismo sistema de archivos.
+func readRootDiskUsage() (diskUsage, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(rootFilesystem, &stat); err != nil {
+		return diskUsage{}, fmt.Errorf("leer espacio en disco de %q: %w", rootFilesystem, err)
+	}
+	if stat.Bsize <= 0 {
+		return diskUsage{}, fmt.Errorf("tamaño de bloque no válido en %q", rootFilesystem)
+	}
+	if stat.Bavail > stat.Blocks {
+		return diskUsage{}, fmt.Errorf("datos de disco no válidos en %q", rootFilesystem)
+	}
+
+	blockSize := uint64(stat.Bsize)
+	totalBytes := stat.Blocks * blockSize
+	freeBytes := stat.Bavail * blockSize
+	return diskUsage{
+		totalBytes: totalBytes,
+		usedBytes:  totalBytes - freeBytes,
 	}, nil
 }
 

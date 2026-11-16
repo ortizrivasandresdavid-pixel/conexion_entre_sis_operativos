@@ -53,7 +53,8 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 - `shell/proc_unix.go` / `shell/proc_other.go`: comportamiento específico de plataforma para gestionar procesos.
 - `shell/shell_test.go`: pruebas de ejecución de comandos y límites.
 - `metrics/metrics.go`: estructura común del reporte de recursos.
-- `metrics/metrics_linux.go`: recopilación en Linux desde `/proc` y `statfs` (CPU, procesos, memoria y disco de `/`).
+- `metrics/metrics_linux.go`: recopilación en Linux de CPU, procesos y memoria desde `/proc`, y del disco exclusivamente en la partición raíz (`/`) mediante `syscall.Statfs_t` dentro de `readRootDiskUsage`.
+- `metrics/metrics_linux_test.go`: prueba Linux que valida que la medición de disco de la raíz devuelve tamaños coherentes.
 - `metrics/metrics_other.go`: implementación alternativa para plataformas no Linux.
 - `logging/logging.go`: logger estructurado con `log/slog`, salida a consola/archivo y rotación por tamaño.
 - `logging/logging_test.go`: pruebas de escritura y rotación de logs.
@@ -71,7 +72,7 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 - **SHA-256**: se almacena el hash de la contraseña en el archivo plano de usuarios. En autenticación, el servidor emite un nonce y cliente y servidor calculan/verifican una prueba SHA-256 ligada al usuario y al desafío; se compara en tiempo constante. Este esquema no reemplaza TLS ni un algoritmo especializado de almacenamiento de contraseñas.
 - **Goroutines y canales**: el servidor procesa conexiones concurrentes con un límite de 32; cada sesión intercala solicitudes, resultados y ticks de métricas. El cliente tiene una goroutine de lectura que publica eventos por un canal, mientras la GUI aplica cambios en el hilo de interfaz.
 - **Configuración y despliegue**: los parámetros se leen desde `.conf`; existen una configuración de desarrollo y plantillas de instalación para `/etc`. En Debian, systemd gestiona el ciclo de vida del servidor.
-- **Métricas**: se recopilan periódicamente en el servidor Linux y se transmiten al cliente; la GUI presenta porcentajes de CPU, memoria y disco.
+- **Métricas**: se recopilan periódicamente en el servidor Linux y se transmiten al cliente; la GUI presenta porcentajes de CPU, memoria y disco. El disco se consulta siempre en la partición raíz (`/`) con `syscall.Statfs_t`, sin depender del directorio de trabajo del proceso.
 
 ## 4. Estado actual del desarrollo
 
@@ -82,11 +83,11 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 | Servidor TCP y configuración `.conf` | **Implementado**: carga parámetros, valida valores y acepta configuración por argumentos de línea de comandos. |
 | Autenticación | **Implementada**: archivo plano de hashes SHA-256, desafío aleatorio, verificación de prueba, autorización por IP/CIDR y limitación de intentos con espera progresiva. |
 | Ejecución remota | **Implementada**: comandos mediante `bash`/`sh`, directorio de trabajo persistente por sesión, timeout y límite de salida. No hay lista blanca de comandos. |
-| Métricas | **Implementadas**: reportes de CPU, procesos, memoria y disco raíz en Linux; envío periódico y consumo en el cliente. |
+| Métricas | **Implementadas**: reportes de CPU, procesos, memoria y disco raíz (`/`) mediante `syscall.Statfs_t`; envío periódico y consumo en el cliente. |
 | Cliente de consola | **Implementado**: validación de parámetros y conexión al servidor. |
 | GUI Fyne | **Implementada**: interfaz de conexión, terminal, estado, historial y panel de métricas; se distribuye como módulo separado. |
 | Concurrencia | **Implementada**: goroutines, canales, sincronización de escritura y límite de conexiones. |
-| Pruebas automatizadas | **Hay pruebas** para configuración, autenticación, sockets, shell, sesiones y logging. La existencia de tests no acredita por sí sola que se hayan ejecutado en todos los entornos objetivo. |
+| Pruebas automatizadas | **Hay pruebas** para configuración, autenticación, sockets, shell, sesiones, logging y métricas de disco en Linux. La existencia de tests no acredita por sí sola que se hayan ejecutado en todos los entornos objetivo. |
 | systemd | **Artefacto implementado**: existe `deploy/servidor-operativos.service` y el README documenta instalación y endurecimiento. **Pendiente de validar** en el Debian de destino: instalación, permisos, arranque, reinicio y acceso efectivo a logs. |
 | Logs | **Implementados en el código**: registros estructurados a stdout y archivo, con rotación configurable; systemd puede enviar stdout a journald. **Pendiente de validar** en despliegue: permisos, creación de directorios, rotación y consulta con journald. |
 | Paper/documento académico | **Pendiente de confirmar**: no se encontró un paper o manuscrito en el repositorio. Debe elaborarse o actualizarse según los requisitos de la asignatura. |
