@@ -215,13 +215,13 @@ Abre PowerShell en la raíz del proyecto y compila el cliente:
 go build -o cliente.exe .\cliente
 ```
 
-Ejecuta el cliente con la IP VPN del servidor:
+Ejecuta el cliente con la IP VPN del servidor, el puerto y el período de reporte:
 
 ```powershell
-.\cliente.exe 10.8.0.1
+.\cliente.exe 10.8.0.1 2306 5
 ```
 
-Reemplaza `10.8.0.1` por la IP VPN real de Debian. Al indicar solo la IP, el cliente usa el puerto 2306 y recibe métricas cada 5 segundos. Si necesitas otros valores, puedes indicarlos opcionalmente: `.\cliente.exe <IP-VPN-servidor> <puerto> <periodo-segundos>`. El período debe ser de 1 a 3600 segundos y no puede superar `MaxReportPeriodSeconds` del servidor.
+Los tres argumentos son obligatorios: `<IP-servidor>`, `<puerto>` y `<periodo-segundos>`. Reemplaza `10.8.0.1` por la IP VPN real de Debian. El puerto debe estar entre 1 y 65535; el período debe ser un entero mayor que 0, no puede superar 3600 segundos ni `MaxReportPeriodSeconds` del servidor. Si falta algún argumento o alguno no es válido, el cliente muestra el uso correcto y termina con código de salida 1.
 
 ### 3. Autenticarse y usar la terminal
 
@@ -306,7 +306,7 @@ go -C .\src\opergui build -o ..\..\cliente-gui.exe .
 
 En la ventana, ingresa la IP del servidor, el puerto (por defecto `2306`), el período de reportes (por defecto `5` segundos) y las credenciales; luego selecciona **Conectar**. Tras autenticarte, escribe cualquier comando de Linux (`ls -la`, `df -h`, `cd /tmp`, `pwd`...) y presiona Enter o **Ejecutar**. El indicador antes de cada comando muestra el directorio de trabajo actual en el servidor, y las salidas con código distinto de cero se marcan con `[código de salida: N]`. Solo se permite un comando pendiente a la vez; los reportes periódicos siguen actualizando el panel lateral. Para cerrar la sesión, envía `bye`.
 
-La GUI y el cliente de consola son ejecutables separados. Los argumentos de consola siguen siendo compatibles (`cliente <IP-servidor> [puerto] [periodo-segundos]`); para la GUI, esos valores se ingresan en los campos de la ventana.
+La GUI y el cliente de consola son ejecutables separados. El cliente de consola exige los tres argumentos (`cliente <IP-servidor> <puerto> <periodo-segundos>`); para la GUI, esos valores se ingresan en los campos de la ventana.
 
 ## Conexión remota desde otra red (Cliente Externo)
 
@@ -364,13 +364,13 @@ Desde PowerShell, en la raíz del proyecto, compila el cliente de consola:
 go build -o cliente.exe .\cliente
 ```
 
-Conéctate usando la IP de Tailscale del **servidor Debian**:
+Conéctate usando la IP de Tailscale del **servidor Debian**, el puerto y el período:
 
 ```powershell
-.\cliente.exe <IP_TAILSCALE_SERVIDOR>
+.\cliente.exe <IP_TAILSCALE_SERVIDOR> 2306 5
 ```
 
-Sustituye el marcador por la IP real, por ejemplo `.\cliente.exe 100.83.168.60`. El cliente usa TCP 2306 por defecto.
+Sustituye el marcador por la IP real, por ejemplo `.\cliente.exe 100.83.168.60 2306 5`. Los tres argumentos son obligatorios: IP, puerto y período en segundos.
 
 Para iniciar la interfaz gráfica Fyne desde la raíz del proyecto:
 

@@ -11,35 +11,59 @@ func TestParseClientArgs(t *testing.T) {
 		wantErr     bool
 	}{
 		{
-			name:    "rechaza ausencia de IP",
+			name:    "rechaza ausencia de argumentos",
 			args:    nil,
 			wantErr: true,
 		},
 		{
-			name:        "IP sola usa valores predeterminados",
-			args:        []string{"10.8.0.1"},
-			wantAddress: "10.8.0.1:2306",
-			wantPeriod:  5,
+			name:    "rechaza IP sin puerto ni período",
+			args:    []string{"10.8.0.1"},
+			wantErr: true,
 		},
 		{
-			name:        "acepta puerto e intervalo opcionales",
+			name:    "rechaza IP y puerto sin período",
+			args:    []string{"10.8.0.1", "2306"},
+			wantErr: true,
+		},
+		{
+			name:        "acepta IP, puerto y período",
 			args:        []string{"2001:db8::1", "2400", "10"},
 			wantAddress: "[2001:db8::1]:2400",
 			wantPeriod:  10,
 		},
 		{
 			name:    "rechaza IP inválida",
-			args:    []string{"servidor.local"},
+			args:    []string{"servidor.local", "2306", "5"},
 			wantErr: true,
 		},
 		{
-			name:    "rechaza puerto inválido",
-			args:    []string{"10.8.0.1", "0"},
+			name:    "rechaza puerto cero",
+			args:    []string{"10.8.0.1", "0", "5"},
 			wantErr: true,
 		},
 		{
-			name:    "rechaza intervalo inválido",
+			name:    "rechaza puerto no numérico",
+			args:    []string{"10.8.0.1", "abc", "5"},
+			wantErr: true,
+		},
+		{
+			name:    "rechaza período cero",
 			args:    []string{"10.8.0.1", "2306", "0"},
+			wantErr: true,
+		},
+		{
+			name:    "rechaza período negativo",
+			args:    []string{"10.8.0.1", "2306", "-5"},
+			wantErr: true,
+		},
+		{
+			name:    "rechaza período no numérico",
+			args:    []string{"10.8.0.1", "2306", "abc"},
+			wantErr: true,
+		},
+		{
+			name:    "rechaza período fuera del máximo",
+			args:    []string{"10.8.0.1", "2306", "3601"},
 			wantErr: true,
 		},
 		{

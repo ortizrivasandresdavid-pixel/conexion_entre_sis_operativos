@@ -12,11 +12,21 @@ import (
 	"operativos/src/sockets"
 )
 
+const clientUsage = "Uso: cliente <IP-servidor> <puerto> <periodo-segundos>\n" +
+	"Ejemplo: cliente 10.8.0.1 2306 5"
+
 func main() {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "Error: faltan argumentos.")
+		fmt.Fprintln(os.Stderr, clientUsage)
+		os.Exit(1)
+	}
+
 	address, period, err := parseClientArgs(os.Args[1:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintln(os.Stderr, clientUsage)
+		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -28,30 +38,27 @@ func main() {
 }
 
 func parseClientArgs(args []string) (string, int, error) {
-	if len(args) < 1 || len(args) > 3 {
-		return "", 0, fmt.Errorf("Uso: cliente <IP-servidor> [puerto] [periodo-segundos]")
-	}
-	if net.ParseIP(args[0]) == nil {
-		return "", 0, fmt.Errorf("La IP del servidor no es válida")
+	if len(args) != 3 {
+		return "", 0, fmt.Errorf("se requieren exactamente 3 argumentos")
 	}
 
-	port := 2306
-	if len(args) >= 2 {
-		value, err := strconv.Atoi(args[1])
-		if err != nil || value < 1 || value > 65535 {
-			return "", 0, fmt.Errorf("El puerto debe estar entre 1 y 65535")
-		}
-		port = value
+	ip := args[0]
+	if net.ParseIP(ip) == nil {
+		return "", 0, fmt.Errorf("la IP del servidor no es válida")
 	}
 
-	period := 5
-	if len(args) == 3 {
-		value, err := strconv.Atoi(args[2])
-		if err != nil || value < 1 || value > 3600 {
-			return "", 0, fmt.Errorf("El período debe estar entre 1 y 3600 segundos")
-		}
-		period = value
+	port, err := strconv.Atoi(args[1])
+	if err != nil || port < 1 || port > 65535 {
+		return "", 0, fmt.Errorf("el puerto debe ser un entero entre 1 y 65535")
 	}
 
-	return net.JoinHostPort(args[0], strconv.Itoa(port)), period, nil
+	period, err := strconv.Atoi(args[2])
+	if err != nil || period <= 0 {
+		return "", 0, fmt.Errorf("el período debe ser un entero mayor que 0")
+	}
+	if period > 3600 {
+		return "", 0, fmt.Errorf("el período no puede superar 3600 segundos")
+	}
+
+	return net.JoinHostPort(ip, strconv.Itoa(port)), period, nil
 }

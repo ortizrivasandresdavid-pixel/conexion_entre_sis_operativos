@@ -20,8 +20,8 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 
 ### `cliente/`
 
-- `main.go`: entrada del cliente de consola. Valida IP, puerto y período de reportes, gestiona señales de terminación y delega la sesión a `src/sockets`.
-- `main_test.go`: pruebas de los argumentos de línea de comandos.
+- `main.go`: entrada del cliente de consola. Exige exactamente tres argumentos (`IP`, `puerto`, `período`), valida que el período sea un entero mayor que 0 y que no supere 3600 segundos, muestra el uso y termina con código 1 si faltan o son inválidos; después gestiona señales de terminación y delega la sesión a `src/sockets`.
+- `main_test.go`: pruebas del parseo de argumentos, incluyendo faltantes, IP/puerto inválidos, períodos cero/negativos/no numéricos y argumentos adicionales.
 
 ### `servidor/`
 
@@ -84,10 +84,10 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 | Autenticación | **Implementada**: archivo plano de hashes SHA-256, desafío aleatorio, verificación de prueba, autorización por IP/CIDR y limitación de intentos con espera progresiva. |
 | Ejecución remota | **Implementada**: comandos mediante `bash`/`sh`, directorio de trabajo persistente por sesión, timeout y límite de salida. No hay lista blanca de comandos. |
 | Métricas | **Implementadas**: reportes de CPU, procesos, memoria y disco raíz (`/`) mediante `syscall.Statfs_t`; envío periódico y consumo en el cliente. |
-| Cliente de consola | **Implementado**: validación de parámetros y conexión al servidor. |
+| Cliente de consola | **Implementado**: exige IP, puerto y período en la línea de comandos, valida los tres valores, muestra el uso y sale con código 1 ante errores de argumentos; después conecta con el servidor. |
 | GUI Fyne | **Implementada**: interfaz de conexión, terminal, estado, historial y panel de métricas; se distribuye como módulo separado. |
 | Concurrencia | **Implementada**: goroutines, canales, sincronización de escritura y límite de conexiones. |
-| Pruebas automatizadas | **Hay pruebas** para configuración, autenticación, sockets, shell, sesiones, logging y métricas de disco en Linux. La existencia de tests no acredita por sí sola que se hayan ejecutado en todos los entornos objetivo. |
+| Pruebas automatizadas | **Hay pruebas** para argumentos del cliente, configuración, autenticación, sockets, shell, sesiones, logging y métricas de disco en Linux. La existencia de tests no acredita por sí sola que se hayan ejecutado en todos los entornos objetivo. |
 | systemd | **Artefacto implementado**: existe `deploy/servidor-operativos.service` y el README documenta instalación y endurecimiento. **Pendiente de validar** en el Debian de destino: instalación, permisos, arranque, reinicio y acceso efectivo a logs. |
 | Logs | **Implementados en el código**: registros estructurados a stdout y archivo, con rotación configurable; systemd puede enviar stdout a journald. **Pendiente de validar** en despliegue: permisos, creación de directorios, rotación y consulta con journald. |
 | Paper/documento académico | **Pendiente de confirmar**: no se encontró un paper o manuscrito en el repositorio. Debe elaborarse o actualizarse según los requisitos de la asignatura. |
