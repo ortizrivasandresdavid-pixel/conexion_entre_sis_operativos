@@ -154,7 +154,7 @@ sudo install -o root -g operativos -m 0640 deploy/configProyecto.users /etc/conf
 sudoedit /etc/configProyecto.conf
 ```
 
-Cambia `AllowedClientIP` por la IP o red VPN del cliente antes de arrancar el servicio.
+Cambia `AllowedClientIP` por la IP o red VPN del cliente antes de arrancar el servicio. Mantén `LogFile` dentro de `/var/log/proyecto-operativos`: si lo cambias a otra ruta, añádela a `ReadWritePaths=` en la unidad o el logger solo podrá escribir en journald por `ProtectSystem=strict`.
 
 ### 4. Instalar y habilitar la unidad
 
@@ -165,26 +165,95 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now servidor-operativos
 ```
 
-### 5. Verificar el servicio y los logs
+### 5. Verificar permisos, servicio y logging
+
+Antes de probar el cliente, confirma que el usuario `operativos` puede leer la configuración y escribir solo en sus directorios:
 
 ```bash
-systemctl status servidor-operativos --no-pager
-systemctl is-enabled servidor-operativos
-journalctl -u servidor-operativos -n 50 --no-pager
-sudo tail -f /var/log/proyecto-operativos/servidor.log
-sudo ss -ltnp 'sport = :2306'
-pgrep -u operativos -af servidor-operativos
-sudo systemctl show servidor-operativos -p User --value
+namei -l /etc/configProyecto.conf
+namei -l /etc/configProyecto.users
+sudo -u operativos test -r /etc/configProyecto.conf && echo "configuración legible"
+sudo -u operativos test -r /etc/configProyecto.users && echo "usuarios legible"
+sudo -u operativos test -w /var/lib/servidor-operativos && echo "estado escribible"
+sudo -u operativos test -w /var/log/proyecto-operativos && echo "logs escribible"
 ```
 
-`systemctl status` debe mostrar `active (running)`; `ss` debe mostrar el puerto 2306 escuchando y `pgrep`/`systemctl show` deben confirmar que el proceso corre como `operativos`. En el log aparecerá, entre otras, la línea `msg="servidor escuchando"`.
-
-### 6. Operación diaria
+Comprueba el estado real del servicio y del proceso:
 
 ```bash
-sudo systemctl restart servidor-operativos   # tras editar /etc/configProyecto.conf
+systemctl is-enabled servidor-operativos
+systemctl is-active servidor-operativos
+systemctl status servidor-operativos --no-pager
+systemctl show servidor-operativos -p User -p Group -p ExecStart -p Restart
+pgrep -u operativos -af servidor-operativos
+sudo ss -ltnp 'sport = :2306'
+```
+
+`is-enabled` debe responder `enabled` e `is-active` debe responder `active`. El proceso debe pertenecer a `operativos` y el puerto 2306 debe estar escuchando.
+
+Verifica el logging estructurado en el archivo y en journald:
+
+```bash
+sudo stat -c '%U:%G %a %n' /var/log/proyecto-operativos/servidor.log
+sudo grep -F 'msg="servidor escuchando"' /var/log/proyecto-operativos/servidor.log
+journalctl -u servidor-operativos -b -n 50 --no-pager
+```
+
+El archivo debe pertenecer a `operativos:operativos` con modo `0640`, y deben aparecer las líneas de arranque `msg="configuración cargada"` y `msg="servidor escuchando"`. Si UFW está activo, permite TCP 2306 solo desde la IP VPN del cliente:
+
+```bash
+sudo ufw status verbose
+sudo ufw allow from <IP_VPN_CLIENTE> to any port 2306 proto tcp
+```
+
+Para validar los eventos de autenticación y comandos, ejecuta el cliente desde Windows con la IP VPN del servidor y el puerto 2306, introduce primero una contraseña incorrecta, autentícate después y ejecuta `pwd`:
+
+```powershell
+.\cliente.exe <IP_VPN_SERVIDOR> 2306 5
+```
+
+De vuelta en Debian, comprueba el archivo de log:
+
+```bash
+sudo grep -F 'autenticación fallida' /var/log/proyecto-operativos/servidor.log
+sudo grep -F 'comando recibido' /var/log/proyecto-operativos/servidor.log
+sudo grep -F 'comando finalizado' /var/log/proyecto-operativos/servidor.log
+sudo tail -n 30 /var/log/proyecto-operativos/servidor.log
+```
+
+### 6. Validar el arranque automático tras reiniciar Debian
+
+```bash
+sudo reboot
+```
+
+Después de reconectar, sin ejecutar `systemctl start` manualmente:
+
+```bash
+systemctl is-enabled servidor-operativos
+systemctl is-active servidor-operativos
+systemctl status servidor-operativos --no-pager
+journalctl -b -u servidor-operativos -n 50 --no-pager
+sudo tail -n 30 /var/log/proyecto-operativos/servidor.log
+pgrep -u operativos -af servidor-operativos
+sudo ss -ltnp 'sport = :2306'
+```
+
+Si algo falla, revisa primero el error de configuración o de permisos:
+
+```bash
+systemctl --failed
+journalctl -b -u servidor-operativos -e --no-pager
+sudo systemd-analyze verify /etc/systemd/system/servidor-operativos.service
+```
+
+### 7. Operación diaria y diagnóstico
+
+```bash
+sudo systemctl restart servidor-operativos   # tras editar /etc/configProyecto.conf o users
 sudo systemctl stop servidor-operativos
 sudo systemctl disable --now servidor-operativos
+sudo systemd-analyze security servidor-operativos
 ```
 
 La unidad aplica `ProtectSystem=strict`, `NoNewPrivileges=true`, `CapabilityBoundingSet=` vacío y `PrivateTmp=true`. Los comandos remotos se ejecutan como `operativos` y solo pueden escribir en `/var/lib/servidor-operativos`, en su `/tmp` privado y en `/var/log/proyecto-operativos`; el resto del sistema queda en solo lectura. Si un comando necesita otra ruta, añádela de forma consciente con `ReadWritePaths=` en la unidad. El servidor nunca debe ejecutarse como `root`: quien se autentique tendría los mismos permisos que el proceso.

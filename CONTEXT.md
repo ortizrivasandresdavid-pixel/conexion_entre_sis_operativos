@@ -12,7 +12,7 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 
 ### Raíz
 
-- `README.md`: guía principal; documenta alcance, seguridad, configuración, compilación, ejecución, despliegue en Debian, uso de consola y GUI y conexión por VPN.
+- `README.md`: guía principal; documenta alcance, seguridad, configuración, compilación, ejecución, despliegue en Debian con systemd (usuario dedicado, permisos, logging estructurado y validación tras reinicio), uso de consola y GUI y conexión por VPN.
 - `go.mod` / `go.sum`: módulo principal `operativos`, versión declarada de Go 1.27.3 y dependencias del cliente de consola.
 - `iniciar-servidor-debian.sh`: comprueba la versión de Go, elige la configuración de producción o de desarrollo y ejecuta el servidor.
 - `preparar-debian.sh` / `preparar-windows.ps1`: scripts de preparación de los entornos indicados por su nombre.
@@ -88,14 +88,14 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 | GUI Fyne | **Implementada**: interfaz de conexión, terminal, estado, historial y panel de métricas; se distribuye como módulo separado. |
 | Concurrencia | **Implementada**: goroutines, canales, sincronización de escritura y límite de conexiones. |
 | Pruebas automatizadas | **Hay pruebas** para argumentos del cliente, configuración, autenticación, sockets, shell, sesiones, logging y métricas de disco en Linux. La existencia de tests no acredita por sí sola que se hayan ejecutado en todos los entornos objetivo. |
-| systemd | **Artefacto implementado**: existe `deploy/servidor-operativos.service` y el README documenta instalación y endurecimiento. **Pendiente de validar** en el Debian de destino: instalación, permisos, arranque, reinicio y acceso efectivo a logs. |
-| Logs | **Implementados en el código**: registros estructurados a stdout y archivo, con rotación configurable; systemd puede enviar stdout a journald. **Pendiente de validar** en despliegue: permisos, creación de directorios, rotación y consulta con journald. |
+| systemd | **Artefacto implementado y runbook documentado**: `deploy/servidor-operativos.service` usa el usuario dedicado `operativos`, `StateDirectory`/`LogsDirectory` y endurecimiento; el README detalla instalación, permisos, comprobación de `systemd-analyze verify`, `enable --now` y arranque tras reinicio. **Pendiente de ejecutar/validar** en el Debian de destino. |
+| Logs | **Implementados en el código y validación documentada**: registros estructurados a stdout/journald y archivo, con rotación configurable; el README incluye comprobaciones de propietario/modo, mensajes de arranque, autenticación, comandos y `journalctl`. **Pendiente de ejecutar** en el despliegue real. |
 | Paper/documento académico | **Pendiente de confirmar**: no se encontró un paper o manuscrito en el repositorio. Debe elaborarse o actualizarse según los requisitos de la asignatura. |
 | PDF de seguimiento | **No disponible** en los archivos inspeccionados; no es posible atribuirle hitos o pendientes específicos sin incorporarlo. |
 
 ### Riesgos y validaciones pendientes
 
-1. Validar en un Debian limpio el servicio systemd con usuario dedicado y rutas de configuración, usuarios y logs.
+1. Ejecutar en un Debian limpio el runbook del README para el servicio systemd: usuario dedicado, rutas de configuración/usuarios, permisos, arranque tras reinicio y lectura de logs en journald/archivo.
 2. Verificar conectividad y reglas de firewall/VPN con las IP configuradas para cliente y servidor.
 3. Probar la GUI en Windows con Fyne/CGo y confirmar la experiencia de ejecución en la plataforma objetivo.
 4. Documentar explícitamente en la entrega académica que el protocolo no cifra tráfico y que una cuenta autenticada obtiene los permisos del proceso servidor.
