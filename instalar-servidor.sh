@@ -1,6 +1,16 @@
 #!/bin/bash
 # Script automatizado de despliegue para el servidor de sistemas operativos
 
+# Función para mantener la ventana abierta al terminar
+pausar() {
+    echo ""
+    echo "=================================================="
+    read -p "Proceso finalizado. Presiona [ENTER] para cerrar esta ventana..."
+}
+
+# Si ocurre algún error en medio del script, atrapalo y avísale al usuario sin cerrar la terminal
+trap 'echo ""; echo "❌ Error: Algo falló durante la instalación."; pausar; exit 1' ERR
+
 set -e
 echo "=== Iniciando instalacion formal del servidor en Debian ==="
 
@@ -38,3 +48,6 @@ sudo systemctl enable --now servidor-operativos
 
 echo "=== ¡Instalacion y arranque completados con exito! ==="
 sudo systemctl status servidor-operativos --no-pager
+
+# Llamar a la pausa para que la ventana permanezca abierta
+pausar
