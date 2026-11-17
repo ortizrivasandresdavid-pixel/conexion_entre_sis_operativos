@@ -30,7 +30,7 @@ sudo install -d -o operativos -g operativos -m 0750 \
 # 3. Compilar el binario del servidor
 echo "Compilando binario de Go..."
 mkdir -p dist/linux
-go build -trimpath -ldflags="-s -w" -o dist/linux/servidor-operativos ./servidor
+/usr/local/go/bin/go build -trimpath -ldflags="-s -w" -o dist/linux/servidor-operativos ./servidor
 sudo install -o root -g root -m 0755 dist/linux/servidor-operativos /usr/local/bin/servidor-operativos
 
 # 4. Instalar archivos de configuracion
