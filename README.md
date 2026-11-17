@@ -1,184 +1,256 @@
-# Administración y monitorización de laboratorio en Go
+# Administración y monitorización de sistemas en Go
 
-Ejemplo educativo de cliente Windows y servidor Debian/Linux mediante TCP. El cliente ofrece una consola de texto y una interfaz gráfica Fyne; ambas autentican al usuario y permiten ejecutar comandos reales en el servidor, además de mostrar métricas periódicas de CPU, memoria y disco.
+Proyecto académico multiplataforma: servidor en Debian/Linux y clientes para Windows (consola y GUI Fyne). El sistema permite autenticarse, ejecutar comandos remotos y recibir métricas periódicas del servidor.
 
-## Alcance y seguridad
+> **Uso restringido a entornos controlados.** El servidor ejecuta comandos arbitrarios con los permisos de su proceso. El protocolo TCP de la aplicación no está cifrado: para conectar equipos distintos, utiliza una VPN privada y no expongas el puerto del servicio a Internet.
 
-El servidor **ejecuta cualquier comando de Linux** que envíe un cliente autenticado, igual que una sesión SSH: no hay lista blanca. Cada comando se evalúa con `bash` (o `sh` como alternativa) mediante `bash -c`, de modo que funcionan tuberías, redirecciones, comodines, `&&`, scripts y comandos como `cd`, `tree`, `apt`, `systemctl`, etc.
+## Tabla de contenidos
 
-El directorio de trabajo se conserva durante toda la conexión: si escribes `cd /var/log`, el siguiente comando se ejecuta en `/var/log`. Cada comando se ejecuta en un proceso `bash` nuevo, así que las variables exportadas con `export` no se conservan entre comandos.
+- [Resumen del proyecto y arquitectura rápida](#resumen-arquitectura)
+  - [Arquitectura](#arquitectura)
+  - [Seguridad y límites operativos](#seguridad-limites)
+- [Requisitos del sistema](#requisitos)
+- [Guía de inicio rápido (desarrollo local)](#inicio-rapido)
+- [Despliegue en producción](#despliegue-produccion)
+  - [Red privada y autorización del cliente](#red-privada)
+  - [Instalación automatizada con systemd](#instalacion-systemd)
+  - [Verificación y operación](#verificacion-operacion)
+- [Uso del cliente](#uso-cliente)
+  - [Consola](#cliente-consola)
+  - [Interfaz gráfica Fyne](#cliente-fyne)
+- [Solución de problemas frecuentes](#solucion-problemas)
 
-Esta funcionalidad es equivalente a dar una shell remota, por lo que debes tratarla con las mismas precauciones que SSH:
+<a id="resumen-arquitectura"></a>
+## Resumen del proyecto y arquitectura rápida
 
-- **La conexión TCP no está cifrada.** Los comandos, sus salidas y las métricas pueden ser observados si el tráfico sale de una red confiable. Usa una VPN privada (WireGuard, Tailscale, etc.) entre servidor y clientes y no publiques ni redirijas el puerto TCP a Internet.
-- **El servidor ejecuta los comandos con sus propios permisos.** Ejecútalo con una cuenta de laboratorio sin privilegios, nunca como `root` ni con `sudo` permanente. Quien se autentique tendrá los mismos permisos que el proceso del servidor.
-- **Autenticación y control de acceso:** desafío aleatorio por intento y prueba basada en SHA-256 (la contraseña no viaja en claro), IP o CIDR autorizado y backoff progresivo por IP tras fallos. El servidor informa el tiempo de espera restante; al agotar los intentos responde `AUTH_LOCKED` y cierra la conexión. Cuando vence la penalización, el contador de esa IP se restablece.
+El servidor escucha en TCP, autoriza la IP/CIDR del cliente, autentica usuarios con un archivo plano de hashes SHA-256 y administra una sesión de comandos. Durante la sesión reporta CPU, memoria, procesos y espacio usado en la partición raíz (`/`). Los mensajes de aplicación son JSON delimitado por líneas.
 
-Límites pensados para no bloquear el protocolo ni la memoria del servidor:
+El flujo técnico —despliegue systemd, logs estructurados, métricas, cliente de consola y GUI Fyne— está implementado, probado y verificado en un entorno real con Debian y Windows.
 
-- Cada comando tiene un **tiempo límite de 5 minutos**; al vencer se cancela el grupo de procesos y se devuelve la salida parcial.
-- La salida se limita a **2 MiB** por comando. Si se supera, se corta y se añade el aviso `[salida truncada a 2 MiB]`.
-- No es una terminal interactiva completa: no hay TTY ni Ctrl+C, así que los programas de pantalla completa (`vim`, `nano`, `top` interactivo) y los que piden contraseña por terminal (`sudo`, `passwd`) no funcionan. Usa variantes no interactivas como `top -b -n 1`.
-
-El servidor verifica la IP o CIDR autorizada y limita los intentos fallidos y el período de reporte. Admite hasta 32 conexiones simultáneas. El cliente no se reconecta automáticamente; para iniciar una nueva sesión, vuelve a ejecutarlo y autentícate de nuevo.
-
-## Requisitos
-
-- Go 1.27.3 o posterior.
-- Servidor Debian/Linux (la recolección de CPU, procesos, memoria y disco usa `/proc` y `statfs`, y la ejecución remota requiere `bash` o `sh`).
-- Cliente Windows con acceso TCP al servidor.
-- Puerto TCP 2306 permitido en el firewall entre ambos equipos.
-
-## Configuración centralizada y logs
-
-El servidor busca su configuración por defecto en `/etc/configProyecto.conf`. La ruta se puede cambiar con `-config`; `-users` y `-log` permiten sobrescribir `UsersFile` y `LogFile` sin editar el archivo. Las rutas relativas de `UsersFile` y `LogFile` se resuelven respecto del directorio del archivo de configuración; las de `-users` y `-log`, respecto del directorio actual.
-
-Para desarrollo, `servidor/server.conf` sigue siendo válido: si no se indica `-config` y `/etc/configProyecto.conf` no existe, el servidor intenta `servidor/server.conf` desde la raíz del repositorio. Para producción hay plantillas listas para copiar en `deploy/`:
-
-- `deploy/configProyecto.conf` → `/etc/configProyecto.conf`
-- `deploy/configProyecto.users` → `/etc/configProyecto.users`
-- `deploy/servidor-operativos.service` → `/etc/systemd/system/servidor-operativos.service`
-
-`servidor/server.conf` contiene:
-
-```ini
-ListenIP=0.0.0.0
-Port=2306
-AllowedClientIP=100.66.232.76
-MaxAuthAttempts=3
-UsersFile=users.conf
-DefaultReportPeriodSeconds=5
-MaxReportPeriodSeconds=60
-LogFile=servidor.log
-LogMaxSizeMB=10
-LogBackups=3
-```
-
-Para acceso por VPN, cambia `AllowedClientIP` por la IP VPN de un cliente o por la subred privada asignada a los clientes autorizados. `ListenIP` es la IP local del servidor; `0.0.0.0` escucha en todas sus interfaces, así que restringe el puerto 2306 con el firewall para permitirlo solo desde la interfaz o subred VPN.
-
-`deploy/configProyecto.conf` ya apunta a las rutas centralizadas:
-
-```ini
-ListenIP=0.0.0.0
-Port=2306
-AllowedClientIP=127.0.0.1
-MaxAuthAttempts=3
-UsersFile=/etc/configProyecto.users
-DefaultReportPeriodSeconds=5
-MaxReportPeriodSeconds=60
-LogFile=/var/log/proyecto-operativos/servidor.log
-LogMaxSizeMB=10
-LogBackups=5
-```
-
-`servidor/users.conf` y `deploy/configProyecto.users` traen una cuenta de laboratorio:
+<a id="arquitectura"></a>
+### Arquitectura
 
 ```text
-Usuario: admin
-Password: linux
+┌────────────────────────────── Windows ──────────────────────────────┐
+│  Cliente de consola                 Cliente GUI (Fyne)               │
+│  cliente/main.go                    src/opergui/                     │
+└───────────────────────┬──────────────────────────┬──────────────────┘
+                        └──── TCP / JSON-lines ────┘
+                                   │
+                           VPN privada recomendada
+                                   │
+┌──────────────────────────── Debian/Linux ────────────────────────────┐
+│  servidor/ → src/sockets/ → autenticación, shell y métricas          │
+│                         ↘ logs estructurados                         │
+│  systemd ejecuta el servicio como el usuario sin privilegios         │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
-El archivo almacena `usuario:SHA256(password)`, no la contraseña. Genera hashes para otras cuentas con:
+<a id="seguridad-limites"></a>
+### Seguridad y límites operativos
+
+- La conexión TCP de la aplicación no cifra comandos, respuestas ni métricas. Para conectar equipos distintos, utiliza una VPN privada (por ejemplo, Tailscale o WireGuard); no publiques ni redirijas el puerto `2306` a Internet.
+- El servidor no aplica una lista blanca: un usuario autenticado puede ejecutar comandos con los permisos del proceso servidor. En producción, el servicio corre como el usuario dedicado `operativos`, no como `root`.
+- La autenticación usa un desafío aleatorio y una prueba basada en SHA-256. La contraseña no se envía directamente; este mecanismo no sustituye TLS ni un algoritmo especializado de almacenamiento de contraseñas.
+- Una sesión admite un comando a la vez; cada comando tiene un límite de cinco minutos y una salida máxima de 2 MiB. No hay TTY ni ejecución interactiva para programas como `vim`, `top` interactivo o `sudo` que soliciten contraseña.
+- El servidor admite hasta 32 conexiones concurrentes y limita los intentos fallidos por IP. El cliente no se reconecta automáticamente.
+
+<a id="requisitos"></a>
+## Requisitos del sistema
+
+| Componente | Requisito |
+|---|---|
+| Servidor | Debian/Linux, Go 1.27.3 o posterior, `bash` o `sh`; systemd para el despliegue de producción. |
+| Cliente de consola | Windows y Go 1.27.3 o posterior para compilar desde el código fuente. |
+| Cliente gráfico | Windows, Go, CGo habilitado y un compilador C compatible con Fyne (por ejemplo, GCC de MSYS2). |
+| Red entre equipos | VPN privada activa, IP del cliente autorizada en `AllowedClientIP` y TCP `2306` permitido solo por la red privada. |
+
+El recolector Linux lee CPU, procesos y memoria desde `/proc`, y mide el uso del sistema de archivos raíz con `syscall.Statfs_t`.
+
+<details>
+<summary>Preparar dependencias en los equipos</summary>
+
+En Debian, el script de preparación instala o verifica Go y Tailscale. La autenticación de Tailscale debe completarse manualmente:
 
 ```bash
-printf %s 'TuPassword' | sha256sum
+bash ./preparar-debian.sh
 ```
 
-Agrega una línea `usuario:hash_de_64_caracteres` al archivo indicado por `UsersFile`. No reutilices la cuenta ni la contraseña de ejemplo.
+En Windows, abre PowerShell como administrador desde la raíz del repositorio:
 
-### Registro persistente y rotación
-
-El servidor escribe cada evento en dos destinos:
-
-- **stdout**, que systemd recoge en journald (`journalctl -u servidor-operativos`).
-- **archivo persistente**, indicado por `LogFile` (por defecto `/var/log/proyecto-operativos/servidor.log`).
-
-Cada línea es un registro estructurado de `log/slog`, por ejemplo:
-
-```text
-time=2026-11-16T15:00:00.000-05:00 level=INFO msg="comando recibido" ip=100.66.232.76 comando="ls -la"
+```powershell
+.\preparar-windows.ps1
 ```
 
-Se registran conexiones entrantes y cerradas, IP no autorizada, autenticaciones correctas y fallidas (usuario, intentos restantes y espera), bloqueos, comandos recibidos y finalizados (código de salida y duración) y el arranque/parada del servidor. La salida de los comandos no se guarda en el log. Como el texto de cada comando sí se registra, evita pasar secretos en la línea de comandos. El archivo rota al superar `LogMaxSizeMB`; se conservan `LogBackups` archivos anteriores como `servidor.log.1`, `servidor.log.2`, etc. Si el archivo no se puede abrir y no se indicó `-log`, el servidor continúa solo con stdout y muestra un aviso.
+Si la política de PowerShell bloquea el script, permite su ejecución solo en la sesión actual y vuelve a ejecutarlo:
 
-## Ejecutar en Debian (servidor)
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\preparar-windows.ps1
+```
 
-Desde la raíz del proyecto:
+El preparador de Windows instala Go, Tailscale y las herramientas de compilación de Fyne, y genera `dist\windows\cliente.exe` y `dist\windows\cliente-gui.exe`.
+
+</details>
+
+<a id="inicio-rapido"></a>
+## Guía de inicio rápido (desarrollo local)
+
+Ejecuta estos pasos desde la raíz del repositorio. Antes de conectar equipos distintos, configura la VPN y la IP permitida siguiendo [Red privada y autorización del cliente](#red-privada).
+
+<details>
+<summary>1. Configurar y ejecutar el servidor de desarrollo</summary>
+
+Edita `servidor/server.conf` y establece `AllowedClientIP` con la IP del cliente que se conectará (o con una subred CIDR autorizada). El archivo de usuarios se indica en `UsersFile`; cada entrada debe tener el formato `usuario:hash_sha256`.
+
+Para generar un hash de contraseña en Debian:
 
 ```bash
-mkdir -p dist/linux
-go build -o dist/linux/servidor-operativos ./servidor
-./dist/linux/servidor-operativos -config servidor/server.conf
+printf %s 'ReemplazaEstaContraseña' | sha256sum
 ```
 
-También se puede iniciar directamente:
+Añade el usuario y el hash de 64 caracteres al archivo configurado en `UsersFile`. No reutilices credenciales de ejemplo.
+
+Arranca el servidor desde la raíz del proyecto:
 
 ```bash
 go run ./servidor -config servidor/server.conf
 ```
 
-El servidor escucha en `ListenIP:Port` y arranca su shell en el directorio desde el que se lanzó. Para detenerlo, usa `Ctrl+C`.
+El proceso permanece en primer plano hasta recibir `Ctrl+C`. El período predeterminado de métricas y sus límites se configuran en `servidor/server.conf`.
 
-## Instalar como servicio systemd (Debian)
+</details>
 
-La unidad incluida usa un usuario dedicado `operativos` (sin shell de inicio de sesión), arranca `/usr/local/bin/servidor-operativos` y lee `/etc/configProyecto.conf`. No se recomienda `nobody`: un usuario dedicado permite dar permisos solo a sus directorios de estado y logs.
+<details>
+<summary>2. Compilar y conectar el cliente de consola desde Windows</summary>
 
-### 1. Crear el usuario y los directorios
+En PowerShell, desde la raíz del repositorio:
 
-```bash
-getent group operativos >/dev/null || sudo groupadd --system operativos
-id -u operativos >/dev/null 2>&1 || sudo useradd --system \
-  --gid operativos \
-  --home-dir /var/lib/servidor-operativos \
-  --no-create-home \
-  --shell /usr/sbin/nologin \
-  operativos
-
-sudo install -d -o operativos -g operativos -m 0750 \
-  /var/lib/servidor-operativos /var/log/proyecto-operativos
+```powershell
+go build -o cliente.exe .\cliente
+.\cliente.exe <IP_VPN_SERVIDOR> 2306 5
 ```
 
-### 2. Compilar e instalar el binario
+El cliente requiere exactamente tres argumentos: IP del servidor, puerto y período en segundos. El puerto debe ser `1..65535`; el período debe ser mayor que cero, no puede superar 3600 y tampoco puede exceder `MaxReportPeriodSeconds` del servidor.
+
+</details>
+
+<details>
+<summary>3. Ejecutar las pruebas automatizadas</summary>
 
 ```bash
-mkdir -p dist/linux
-go build -trimpath -ldflags="-s -w" -o dist/linux/servidor-operativos ./servidor
-sudo install -o root -g root -m 0755 dist/linux/servidor-operativos /usr/local/bin/servidor-operativos
+go test ./cliente ./servidor ./src/logging ./src/login ./src/metrics ./src/shell ./src/sockets
 ```
 
-### 3. Instalar la configuración
+Las pruebas de `src/shell` necesitan `bash` o `sh` y se omiten en Windows o en entornos sin una shell POSIX.
+
+</details>
+
+<a id="despliegue-produccion"></a>
+## Despliegue en producción
+
+El despliegue Debian utiliza `instalar-servidor.sh` y la unidad `deploy/servidor-operativos.service`. El instalador crea el usuario y grupo `operativos`, prepara los directorios, compila el servidor, instala configuración y usuarios bajo `/etc/`, registra el servicio y lo habilita e inicia.
+
+<a id="red-privada"></a>
+### Red privada y autorización del cliente
+
+La VPN proporciona el cifrado del trayecto; el protocolo de la aplicación no cifra TCP. Mantén Debian y Windows conectados a la misma VPN y no abras el puerto `2306` hacia Internet. `AllowedClientIP` es la IP **de origen del cliente Windows**, no la dirección del servidor.
+
+Con Tailscale, consulta las direcciones con `tailscale ip -4` en ambos equipos. Antes de instalar, edita `deploy/configProyecto.conf` y sustituye el valor de `AllowedClientIP` por la IP VPN actual del cliente. El instalador copia ese archivo a `/etc/configProyecto.conf`. Si cambia la IP del cliente, actualiza el archivo de producción y reinicia el servicio:
 
 ```bash
-sudo install -o root -g operativos -m 0640 deploy/configProyecto.conf /etc/configProyecto.conf
-sudo install -o root -g operativos -m 0640 deploy/configProyecto.users /etc/configProyecto.users
 sudoedit /etc/configProyecto.conf
+sudo systemctl restart servidor-operativos
 ```
 
-Cambia `AllowedClientIP` por la IP o red VPN del cliente antes de arrancar el servicio. Mantén `LogFile` dentro de `/var/log/proyecto-operativos`: si lo cambias a otra ruta, añádela a `ReadWritePaths=` en la unidad o el logger solo podrá escribir en journald por `ProtectSystem=strict`.
+`AllowedClientIP` admite una IP individual o un bloque CIDR. `ListenIP=0.0.0.0` escucha en todas las interfaces; por eso limita el firewall a la VPN.
 
-### 4. Instalar y habilitar la unidad
+<details>
+<summary>Parámetros principales de configuración</summary>
+
+| Parámetro | Uso |
+|---|---|
+| `ListenIP` / `Port` | Dirección y puerto TCP del servidor (puerto habitual: `2306`). |
+| `AllowedClientIP` | IP o CIDR de los clientes autorizados; para este despliegue, usa la IP VPN de Windows. |
+| `MaxAuthAttempts` | Intentos de autenticación permitidos antes de aplicar el bloqueo temporal. |
+| `UsersFile` | Archivo plano de usuarios y hashes; en producción, `/etc/configProyecto.users`. |
+| `DefaultReportPeriodSeconds` | Período inicial de envío de métricas. |
+| `MaxReportPeriodSeconds` | Período máximo que el cliente puede solicitar (hasta 3600 segundos). |
+| `LogFile` | Archivo persistente; la ruta de producción predeterminada es `/var/log/proyecto-operativos/servidor.log`. |
+| `LogMaxSizeMB` / `LogBackups` | Tamaño antes de rotar y cantidad de archivos anteriores a conservar. |
+
+Las plantillas para desarrollo y producción están en `servidor/server.conf` y `deploy/configProyecto.conf`, respectivamente. Las rutas relativas de archivos de configuración se resuelven desde el directorio del propio `.conf`.
+
+</details>
+
+<details>
+<summary>Pasos de conexión de Tailscale</summary>
+
+1. Instala Tailscale en Debian y Windows y autentica ambos dispositivos en la misma red privada.
+2. En cada dispositivo, consulta su dirección:
+
+   ```bash
+   tailscale ip -4
+   ```
+
+3. Usa la dirección mostrada en Windows como `AllowedClientIP` en el servidor. Usa la dirección mostrada en Debian como IP destino del cliente.
+4. Si UFW está activo, permite el puerto solo desde el cliente:
+
+   ```bash
+   sudo ufw allow from <IP_VPN_CLIENTE> to any port 2306 proto tcp
+   ```
+
+Sustituye el marcador por la IP real. No crees una regla de redirección del puerto en el router. En Tailscale, verifica también que las políticas de acceso permitan al cliente alcanzar el servidor.
+
+</details>
+
+<a id="instalacion-systemd"></a>
+### Instalación automatizada con systemd
+
+El instalador usa `/usr/local/go/bin/go` y rutas relativas al repositorio. Comprueba esa ruta y ejecuta el script desde la raíz del proyecto:
 
 ```bash
-sudo install -o root -g root -m 0644 deploy/servidor-operativos.service /etc/systemd/system/servidor-operativos.service
-sudo systemd-analyze verify /etc/systemd/system/servidor-operativos.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now servidor-operativos
+/usr/local/go/bin/go version
+chmod +x ./instalar-servidor.sh
+./instalar-servidor.sh
 ```
 
-### 5. Verificar permisos, servicio y logging
-
-Antes de probar el cliente, confirma que el usuario `operativos` puede leer la configuración y escribir solo en sus directorios:
+También se puede ejecutar con Bash:
 
 ```bash
-namei -l /etc/configProyecto.conf
-namei -l /etc/configProyecto.users
-sudo -u operativos test -r /etc/configProyecto.conf && echo "configuración legible"
-sudo -u operativos test -r /etc/configProyecto.users && echo "usuarios legible"
-sudo -u operativos test -w /var/lib/servidor-operativos && echo "estado escribible"
-sudo -u operativos test -w /var/log/proyecto-operativos && echo "logs escribible"
+bash ./instalar-servidor.sh
 ```
 
-Comprueba el estado real del servicio y del proceso:
+El usuario actual debe poder usar `sudo`. El script configura el usuario `operativos` sin shell de inicio de sesión, directorios `0750`, configuración y usuarios con propietario `root:operativos` y modo `0640`, binario de servicio y unidad systemd. Al final imprime el estado del servicio. Su `trap` informa errores y la pausa interactiva espera Enter; desde el administrador de archivos, selecciona **Ejecutar en un terminal** para conservar la ventana abierta.
+
+> Revisa `deploy/configProyecto.conf` antes de instalar: el valor de `AllowedClientIP` debe ser la IP VPN del cliente autorizado. Si editas el archivo de `/etc/` después de la instalación, reinicia systemd como se indica arriba.
+
+<details>
+<summary>Configuración de usuarios y archivos instalados</summary>
+
+El servicio carga la configuración desde `/etc/configProyecto.conf` y las credenciales desde la ruta indicada por `UsersFile` (por defecto, `/etc/configProyecto.users`). Las entradas de usuario tienen el formato:
+
+```text
+usuario:hash_sha256_de_64_caracteres
+```
+
+Genera un hash con:
+
+```bash
+printf %s 'ReemplazaEstaContraseña' | sha256sum
+```
+
+Reemplaza cualquier credencial de ejemplo antes de utilizar el sistema fuera de una práctica local. Restringe el acceso a los archivos de credenciales; no almacenes contraseñas en texto claro.
+
+</details>
+
+<a id="verificacion-operacion"></a>
+### Verificación y operación
+
+<details>
+<summary>Verificar servicio, permisos, puerto y logs</summary>
+
+Estado del servicio, usuario y socket:
 
 ```bash
 systemctl is-enabled servidor-operativos
@@ -189,170 +261,74 @@ pgrep -u operativos -af servidor-operativos
 sudo ss -ltnp 'sport = :2306'
 ```
 
-`is-enabled` debe responder `enabled` e `is-active` debe responder `active`. El proceso debe pertenecer a `operativos` y el puerto 2306 debe estar escuchando.
+El servicio debe estar `enabled` y `active`, correr como `operativos` y escuchar en el puerto configurado.
 
-Verifica el logging estructurado en el archivo y en journald:
+Permisos de configuración y directorios:
 
 ```bash
-sudo stat -c '%U:%G %a %n' /var/log/proyecto-operativos/servidor.log
-sudo grep -F 'msg="servidor escuchando"' /var/log/proyecto-operativos/servidor.log
+namei -l /etc/configProyecto.conf
+namei -l /etc/configProyecto.users
+sudo -u operativos test -r /etc/configProyecto.conf && echo "configuración legible"
+sudo -u operativos test -r /etc/configProyecto.users && echo "usuarios legible"
+sudo -u operativos test -w /var/lib/servidor-operativos && echo "estado escribible"
+sudo -u operativos test -w /var/log/proyecto-operativos && echo "logs escribible"
+```
+
+Logs estructurados: se escriben en journald y en `/var/log/proyecto-operativos/servidor.log`; la rotación se configura con `LogMaxSizeMB` y `LogBackups`. Se registran conexiones, autenticaciones y comandos (no sus salidas). Como sí se registra el texto del comando, no incluyas secretos en los comandos enviados.
+
+```bash
 journalctl -u servidor-operativos -b -n 50 --no-pager
+sudo stat -c '%U:%G %a %n' /var/log/proyecto-operativos/servidor.log
+sudo tail -n 50 /var/log/proyecto-operativos/servidor.log
 ```
 
-El archivo debe pertenecer a `operativos:operativos` con modo `0640`, y deben aparecer las líneas de arranque `msg="configuración cargada"` y `msg="servidor escuchando"`. Si UFW está activo, permite TCP 2306 solo desde la IP VPN del cliente:
+La unidad aplica `ProtectSystem=strict`, `NoNewPrivileges=true`, `PrivateTmp=true` y elimina capacidades Linux. El usuario de servicio puede escribir en sus directorios de estado y logs, no de forma general en el sistema.
+
+</details>
+
+<details>
+<summary>Administración y diagnóstico de systemd</summary>
 
 ```bash
-sudo ufw status verbose
-sudo ufw allow from <IP_VPN_CLIENTE> to any port 2306 proto tcp
-```
-
-Para validar los eventos de autenticación y comandos, ejecuta el cliente desde Windows con la IP VPN del servidor y el puerto 2306, introduce primero una contraseña incorrecta, autentícate después y ejecuta `pwd`:
-
-```powershell
-.\cliente.exe <IP_VPN_SERVIDOR> 2306 5
-```
-
-De vuelta en Debian, comprueba el archivo de log:
-
-```bash
-sudo grep -F 'autenticación fallida' /var/log/proyecto-operativos/servidor.log
-sudo grep -F 'comando recibido' /var/log/proyecto-operativos/servidor.log
-sudo grep -F 'comando finalizado' /var/log/proyecto-operativos/servidor.log
-sudo tail -n 30 /var/log/proyecto-operativos/servidor.log
-```
-
-### 6. Validar el arranque automático tras reiniciar Debian
-
-```bash
-sudo reboot
-```
-
-Después de reconectar, sin ejecutar `systemctl start` manualmente:
-
-```bash
-systemctl is-enabled servidor-operativos
-systemctl is-active servidor-operativos
-systemctl status servidor-operativos --no-pager
-journalctl -b -u servidor-operativos -n 50 --no-pager
-sudo tail -n 30 /var/log/proyecto-operativos/servidor.log
-pgrep -u operativos -af servidor-operativos
-sudo ss -ltnp 'sport = :2306'
-```
-
-Si algo falla, revisa primero el error de configuración o de permisos:
-
-```bash
+sudo systemctl restart servidor-operativos
+sudo systemctl stop servidor-operativos
+sudo systemctl disable --now servidor-operativos
 systemctl --failed
 journalctl -b -u servidor-operativos -e --no-pager
 sudo systemd-analyze verify /etc/systemd/system/servidor-operativos.service
-```
-
-### 7. Operación diaria y diagnóstico
-
-```bash
-sudo systemctl restart servidor-operativos   # tras editar /etc/configProyecto.conf o users
-sudo systemctl stop servidor-operativos
-sudo systemctl disable --now servidor-operativos
 sudo systemd-analyze security servidor-operativos
 ```
 
-La unidad aplica `ProtectSystem=strict`, `NoNewPrivileges=true`, `CapabilityBoundingSet=` vacío y `PrivateTmp=true`. Los comandos remotos se ejecutan como `operativos` y solo pueden escribir en `/var/lib/servidor-operativos`, en su `/tmp` privado y en `/var/log/proyecto-operativos`; el resto del sistema queda en solo lectura. Si un comando necesita otra ruta, añádela de forma consciente con `ReadWritePaths=` en la unidad. El servidor nunca debe ejecutarse como `root`: quien se autentique tendría los mismos permisos que el proceso.
+Para comprobar el arranque automático, reinicia Debian y vuelve a consultar `systemctl is-active servidor-operativos` y `systemctl is-enabled servidor-operativos`.
 
-## Usar el cliente de consola
+</details>
 
-La consola de Windows permite iniciar la conexión, ingresar las credenciales, ejecutar comandos y recibir métricas.
+<a id="uso-cliente"></a>
+## Uso del cliente
 
-### 1. Preparar el servidor
+Para equipos distintos, conecta primero a la VPN y usa como destino la IP privada del servidor. La IP que debe aparecer en `AllowedClientIP` es la del cliente Windows.
 
-Para conectar clientes desde distintas redes físicas, primero instala y configura una VPN privada (por ejemplo, WireGuard o Tailscale) en Debian y en cada Windows. Asegúrate de que ambos estén conectados a la misma VPN y que Windows tenga una ruta hacia la IP VPN de Debian. La VPN proporciona el acceso cifrado entre redes; esta aplicación no lo hace por sí sola.
+<a id="cliente-consola"></a>
+### Consola
 
-En `servidor/server.conf`, configura `AllowedClientIP` con la IP VPN del cliente o con la subred VPN que quieras autorizar. `127.0.0.1` solo sirve cuando cliente y servidor se ejecutan en el mismo equipo. Mantén `ListenIP=0.0.0.0` o usa la IP VPN estable del servidor. Configura el firewall de Debian para permitir TCP 2306 solo desde la VPN; no redirijas ese puerto en el router hacia Internet. La VPN debe estar conectada antes de probar la aplicación.
-
-Inicia el servidor desde la raíz del proyecto:
-
-```bash
-go run ./servidor -config servidor/server.conf
-```
-
-Déjalo ejecutándose mientras uses el cliente. Si cambias `UsersFile`, recuerda que su ruta relativa se resuelve respecto del archivo de configuración.
-
-### 2. Iniciar el cliente en Windows
-
-Abre PowerShell en la raíz del proyecto y compila el cliente:
+Desde PowerShell, en la raíz del repositorio, compila y ejecuta con IP, puerto y período:
 
 ```powershell
 go build -o cliente.exe .\cliente
+.\cliente.exe <IP_VPN_SERVIDOR> 2306 5
 ```
 
-Ejecuta el cliente con la IP VPN del servidor, el puerto y el período de reporte:
+El programa valida los tres argumentos y termina con un mensaje de uso si falta alguno o no es válido. Tras autenticarte, escribe comandos Linux; se ejecutan en Debian, no en Windows. El directorio de trabajo se conserva durante la sesión. Usa `history` para ver el historial de la sesión, `history -c` para limpiarlo y `bye` para cerrar la conexión.
 
-```powershell
-.\cliente.exe 10.8.0.1 2306 5
-```
+<a id="cliente-fyne"></a>
+### Interfaz gráfica Fyne
 
-Los tres argumentos son obligatorios: `<IP-servidor>`, `<puerto>` y `<periodo-segundos>`. Reemplaza `10.8.0.1` por la IP VPN real de Debian. El puerto debe estar entre 1 y 65535; el período debe ser un entero mayor que 0, no puede superar 3600 segundos ni `MaxReportPeriodSeconds` del servidor. Si falta algún argumento o alguno no es válido, el cliente muestra el uso correcto y termina con código de salida 1.
+La GUI presenta campos de conexión y credenciales, terminal remota, historial y panel de CPU, memoria y disco. Reutiliza el protocolo de `src/sockets`; la recepción de mensajes ocurre concurrentemente. Solo permite un comando pendiente a la vez.
 
-### 3. Autenticarse y usar la terminal
+<details>
+<summary>Ejecutar o compilar la GUI en Windows</summary>
 
-El cliente solicita las credenciales en este orden:
-
-```text
-Usuario: admin
-Password:
-```
-
-Escribe la contraseña y presiona Enter; no se mostrará mientras la escribes. Para probar en un laboratorio recién clonado, el archivo de ejemplo incluye `admin` / `linux`. Cambia esa cuenta antes de usarlo fuera de una práctica local.
-
-Después de autenticarte puedes escribir cualquier comando de Linux. El historial se mantiene en memoria por conexión: `history` muestra los comandos de la sesión actual (no el `.bash_history` del sistema) y `history -c` lo limpia. Por ejemplo:
-
-```text
-Autenticación correcta. Escribe cualquier comando de Linux; 'bye' para salir.
-Recibirás métricas cada 5 segundos.
-ls -la
-cd /var/log
-pwd
-tail -n 20 syslog
-```
-
-`cd`, `pwd`, `tree` y el resto de comandos se ejecutan en Debian, no en Windows. Como el directorio de trabajo se conserva, tras `cd /var/log` el siguiente `pwd` responde `/var/log`. Si un comando devuelve un código de salida distinto de cero, el cliente muestra `[código de salida: N]` sin cortar la sesión. El cliente muestra las métricas periódicas en la misma consola, incluso mientras escribes. Para cerrar la sesión de forma normal, escribe `bye`.
-
-Si la conexión se interrumpe, confirma que la VPN esté conectada en ambos equipos y revisa la IP VPN, el puerto, el firewall y `AllowedClientIP`; luego vuelve a iniciar el cliente. Los fallos de autenticación persisten por IP incluso al abrir otra conexión y el cliente informa la espera y los intentos restantes.
-
-### Problemas frecuentes
-
-- **No se puede conectar:** verifica que la VPN esté activa en ambos equipos, que haya una ruta entre sus IP VPN, que el servidor esté ejecutándose y que el firewall permita TCP 2306 desde la VPN.
-- **IP no autorizada:** `AllowedClientIP` debe coincidir con la IP VPN del cliente (o con la subred VPN que la incluya).
-- **Credenciales incorrectas:** comprueba el usuario y el hash de contraseña en el archivo indicado por `UsersFile`.
-- **`tree: command not found`:** instálalo en el servidor con `sudo apt install tree`.
-- **Un comando se queda colgado:** espera a que venza el límite de 5 minutos; los programas interactivos o que esperan un TTY (por ejemplo `sudo` o `vim`) no funcionan por este canal.
-- **Autenticación bloqueada:** espera el tiempo indicado antes de intentar de nuevo. El bloqueo se aplica a la IP cliente.
-
-Para compilar el ejecutable de Windows desde Debian, si lo necesitas:
-
-```bash
-GOOS=windows GOARCH=amd64 go build -o cliente.exe ./cliente
-```
-
-## Diferencia con SSH
-
-Esta aplicación usa su propio protocolo TCP sin cifrar y sin TTY; SSH sigue siendo la opción recomendada para administración interactiva en producción. El proyecto implementa su propio canal para cumplir el objetivo académico de sockets, autenticación y métricas. Si usas OpenSSH en paralelo, instálalo y limita el puerto 22 a la VPN:
-
-```bash
-sudo apt install openssh-server
-sudo systemctl enable --now ssh
-```
-
-```powershell
-ssh usuario@10.8.0.1
-```
-
-## Usar la interfaz gráfica Fyne
-
-La aplicación gráfica tiene fondo negro, texto verde monoespaciado en la terminal y el historial de reportes. Incluye campos de IP, puerto, período, usuario y contraseña; salida de comandos, barras de CPU/memoria/disco, contador e historial con desplazamiento automático. La autenticación y el intercambio de mensajes reutilizan el protocolo TCP de `src/sockets`; los reportes se procesan concurrentemente y se reflejan en la ventana sin bloquearla.
-
-La terminal de la GUI sigue automáticamente la salida nueva y el panel de reportes mantiene su propio desplazamiento, de modo que recibir métricas no mueve la terminal. Si se agotan los intentos de autenticación, se deshabilita el formulario y aparece un aviso modal; al cerrarlo, la aplicación termina.
-
-La GUI está en su propio módulo para que Fyne no cambie las dependencias del cliente de consola ni del servidor. En Windows, Fyne requiere CGo y un compilador C. Si usas MSYS2 en `C:\msys64`, configura UCRT64 en la misma ventana de PowerShell antes de ejecutar o compilar:
+Fyne requiere CGo y un compilador C. Si GCC UCRT64 está instalado en `C:\msys64`, configura estas variables en la misma ventana de PowerShell:
 
 ```powershell
 $env:CC = 'C:\msys64\ucrt64\bin\gcc.exe'
@@ -360,155 +336,37 @@ $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
 $env:CGO_ENABLED = '1'
 ```
 
-Desde la raíz del proyecto, ejecútala en desarrollo:
+Ejecuta la GUI desde la raíz:
 
 ```powershell
 go -C .\src\opergui run .
 ```
 
-O compílala en Windows:
+Para crear un ejecutable:
 
 ```powershell
 go -C .\src\opergui build -o ..\..\cliente-gui.exe .
 .\cliente-gui.exe
 ```
 
-En la ventana, ingresa la IP del servidor, el puerto (por defecto `2306`), el período de reportes (por defecto `5` segundos) y las credenciales; luego selecciona **Conectar**. Tras autenticarte, escribe cualquier comando de Linux (`ls -la`, `df -h`, `cd /tmp`, `pwd`...) y presiona Enter o **Ejecutar**. El indicador antes de cada comando muestra el directorio de trabajo actual en el servidor, y las salidas con código distinto de cero se marcan con `[código de salida: N]`. Solo se permite un comando pendiente a la vez; los reportes periódicos siguen actualizando el panel lateral. Para cerrar la sesión, envía `bye`.
+En la ventana, introduce la IP VPN del servidor, puerto `2306`, período de reportes y credenciales; después selecciona **Conectar**.
 
-La GUI y el cliente de consola son ejecutables separados. El cliente de consola exige los tres argumentos (`cliente <IP-servidor> <puerto> <periodo-segundos>`); para la GUI, esos valores se ingresan en los campos de la ventana.
+</details>
 
-## Conexión remota desde otra red (Cliente Externo)
+<a id="solucion-problemas"></a>
+## Solución de problemas frecuentes
 
-Si ejecutas el cliente desde otra casa o red distinta a la del servidor Debian, **no expongas ni redirijas el puerto TCP 2306 directamente a Internet**. El protocolo de esta aplicación no cifra el tráfico, por lo que los comandos, las respuestas y las métricas podrían ser observados. Usa una VPN privada como Tailscale para conectar ambos equipos; la VPN cifra el trayecto entre ellos.
+| Síntoma | Comprobaciones y solución |
+|---|---|
+| El cliente no conecta | Comprueba que el servicio esté activo, ambos equipos estén conectados a la VPN, el destino sea la IP privada de Debian y TCP `2306` esté permitido por el firewall. |
+| `IP no autorizada` | `AllowedClientIP` debe coincidir con la IP VPN de origen del cliente Windows, o incluirla en una red CIDR. Después de editar `/etc/configProyecto.conf`, reinicia el servicio. |
+| systemd no inicia el servicio | Revisa `systemctl status servidor-operativos --no-pager`, `journalctl -u servidor-operativos -b -e --no-pager`, los permisos de archivos y `systemd-analyze verify`. |
+| No aparecen logs en archivo | Comprueba `LogFile`, el propietario y permisos de `/var/log/proyecto-operativos`; consulta también `journalctl -u servidor-operativos`. |
+| El instalador no encuentra Go | Confirma `/usr/local/go/bin/go version`; el instalador requiere el ejecutable en esa ruta absoluta y debe ejecutarse desde la raíz del repositorio. |
+| Argumentos del cliente rechazados | Usa exactamente `cliente <IP-servidor> <puerto> <periodo-segundos>`; la IP debe ser válida, el puerto `1..65535` y el período `1..3600` y no mayor que el máximo del servidor. |
+| Fyne no compila en Windows | Verifica CGo y GCC, configura `CC`, `PATH` y `CGO_ENABLED` en la misma ventana y vuelve a ejecutar `go -C .\src\opergui build .`. |
+| Un comando se queda esperando o no abre una TUI | La sesión no proporciona TTY. Los programas interactivos o que solicitan contraseña por terminal no son compatibles; cada comando se cancela tras cinco minutos. |
+| Autenticación temporalmente bloqueada | Respeta el tiempo de espera que informa el cliente. El control de intentos se aplica por IP cliente. |
+| Falta `tree` u otra utilidad | La utilidad debe estar instalada en Debian; por ejemplo, un administrador puede instalar `tree` con `sudo apt install tree`. |
 
-### 1. Instalar y conectar Tailscale en ambos equipos
-
-1. En Debian, instala Tailscale siguiendo la [guía oficial para Linux](https://tailscale.com/kb/1031/install-linux) y conéctalo a tu tailnet:
-
-   ```bash
-   sudo tailscale up
-   ```
-
-   Completa el inicio de sesión indicado. En Windows, instala Tailscale desde su [página oficial](https://tailscale.com/download/windows), inicia sesión con la misma cuenta/tailnet y confirma que ambos dispositivos aparezcan conectados.
-2. En Debian, consulta la IP de Tailscale del **servidor**:
-
-   ```bash
-   tailscale ip -4
-   ```
-
-   También puedes revisar el estado de los dispositivos con `tailscale status`.
-3. En PowerShell de Windows, consulta la IP de Tailscale del **cliente**:
-
-   ```powershell
-   tailscale ip -4
-   ```
-
-   Mantén la VPN conectada en ambos equipos mientras uses la aplicación.
-
-### 2. Autorizar el cliente en Debian
-
-Edita `servidor/server.conf` en el servidor y configura `AllowedClientIP` con la IP de Tailscale del **cliente Windows** obtenida en el paso anterior. Este valor autoriza el origen de la conexión; no es la IP del servidor que usarás para conectarte. Por ejemplo:
-
-```ini
-ListenIP=0.0.0.0
-Port=2306
-AllowedClientIP=100.83.168.60
-MaxAuthAttempts=3
-UsersFile=users.conf
-DefaultReportPeriodSeconds=5
-MaxReportPeriodSeconds=60
-```
-
-Reemplaza `100.83.168.60` por la IP real del cliente. También puedes autorizar una subred Tailscale usando su notación CIDR, si necesitas permitir varios clientes. Conserva los demás parámetros requeridos que ya tenga tu archivo. `ListenIP=0.0.0.0` permite escuchar en las interfaces del servidor; configura el firewall de Debian para permitir TCP 2306 solo desde la VPN y no crees una regla de redirección del puerto en el router. Si el servidor ya estaba ejecutándose, detenlo con `Ctrl+C` y vuelve a iniciarlo desde la raíz del proyecto para que lea la nueva configuración:
-
-```bash
-go run ./servidor -config servidor/server.conf
-```
-
-### 3. Conectar desde Windows
-
-Desde PowerShell, en la raíz del proyecto, compila el cliente de consola:
-
-```powershell
-go build -o cliente.exe .\cliente
-```
-
-Conéctate usando la IP de Tailscale del **servidor Debian**, el puerto y el período:
-
-```powershell
-.\cliente.exe <IP_TAILSCALE_SERVIDOR> 2306 5
-```
-
-Sustituye el marcador por la IP real, por ejemplo `.\cliente.exe 100.83.168.60 2306 5`. Los tres argumentos son obligatorios: IP, puerto y período en segundos.
-
-Para iniciar la interfaz gráfica Fyne desde la raíz del proyecto:
-
-```powershell
-go -C .\src\opergui run .
-```
-
-En la ventana, ingresa la IP de Tailscale del servidor y el puerto `2306`. Si vas a compilar o ejecutar la GUI localmente en Windows, configura primero `CC`, `PATH` y `CGO_ENABLED` para MSYS2 UCRT64 como se indica en la sección **Usar la interfaz gráfica Fyne**. En las opciones de Tailscale de la organización, asegúrate también de que las reglas de acceso permitan que el cliente alcance el servidor.
-
-## Ejecutar el shell local
-
-En Linux, desde la raíz:
-
-```bash
-go run ./src/shell.go
-```
-
-También ejecuta cualquier comando de tu propia shell y conserva el directorio de trabajo entre comandos. Escribe `exit` o `bye` para salir.
-
-## Pruebas
-
-```bash
-go test ./cliente ./servidor ./src/logging ./src/login ./src/metrics ./src/shell ./src/sockets
-```
-
-Las pruebas de `src/shell` ejecutan `bash`/`sh`, así que se omiten en Windows o donde no haya una shell POSIX disponible.
-
-## Preparar dependencias y ejecutables
-
-Los scripts de preparación instalan Go y Tailscale si hacen falta, descargan las dependencias de Go y compilan los ejecutables. La conexión de Tailscale requiere iniciar sesión manualmente en cada equipo; el script no cambia la configuración de red ni abre puertos.
-
-### Windows: cliente de consola y GUI
-
-Abre PowerShell como administrador desde la raíz del proyecto y ejecuta:
-
-```powershell
-.\preparar-windows.ps1
-```
-
-Si PowerShell bloquea la ejecución del archivo, permite scripts solo en esa ventana y vuelve a ejecutarlo:
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\preparar-windows.ps1
-```
-
-El script instala Go, Tailscale y MSYS2 con GCC UCRT64, configura `CC`, `PATH` y `CGO_ENABLED` durante la compilación y crea:
-
-- `dist\windows\cliente.exe`
-- `dist\windows\cliente-gui.exe`
-
-Si Windows solicita reiniciar o cerrar sesión después de instalar una herramienta, hazlo y vuelve a ejecutar el script.
-
-### Debian: servidor
-
-Ejecuta el instalador de dependencias:
-
-```bash
-bash ./preparar-debian.sh
-```
-
-También puedes usar **Ejecutar como un programa** desde el administrador de archivos. El script abrirá una terminal y solicitará autorización de administrador mediante `pkexec`; no hace falta agregar tu usuario al grupo `sudo`. Si no aparece la solicitud de autorización, ejecútalo desde una terminal o pide al administrador que habilite PolicyKit. Este script solo instala/verifica dependencias; no compila ni inicia el servidor.
-
-Configura `servidor/server.conf` (o `/etc/configProyecto.conf` si ya instalaste el servicio) para autorizar la IP VPN del cliente y luego inicia el servidor con el lanzador:
-
-```bash
-bash ./iniciar-servidor-debian.sh
-```
-
-El lanzador usa `/etc/configProyecto.conf` si existe; si no, cae en `servidor/server.conf`. Puedes forzar otra ruta con `OPERATIVOS_CONFIG=/ruta/config.conf bash ./iniciar-servidor-debian.sh`. Ejecuta `go run ./servidor` en una terminal y mantiene el servidor activo hasta detenerlo con `Ctrl+C`. También puedes usar **Ejecutar como un programa** sobre el lanzador. Inicia sesión en Tailscale antes de conectar el cliente.
-
-El cliente y el servidor siguen necesitando conectividad por la VPN. No publiques el puerto TCP 2306 directamente en Internet.
+Para administración interactiva en producción, utiliza SSH en lugar de esta shell educativa. La aplicación no tiene TTY y no cifra el protocolo TCP.

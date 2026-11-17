@@ -12,8 +12,9 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 
 ### Raíz
 
-- `README.md`: guía principal; documenta alcance, seguridad, configuración, compilación, ejecución, despliegue en Debian con systemd (usuario dedicado, permisos, logging estructurado y validación tras reinicio), uso de consola y GUI y conexión por VPN.
+- `README.md`: guía principal; documenta alcance, seguridad, configuración, compilación, ejecución, despliegue automatizado en Debian, validación de systemd y logs, uso de consola y GUI y conexión obligatoria mediante VPN privada.
 - `go.mod` / `go.sum`: módulo principal `operativos`, versión declarada de Go 1.27.3 y dependencias del cliente de consola.
+- `instalar-servidor.sh`: instalador automatizado de producción. Desde la raíz del repositorio crea el grupo/usuario `operativos`, directorios protegidos, compila con `/usr/local/go/bin/go`, instala el binario, configura archivos en `/etc/`, registra la unidad systemd y habilita/inicia el servicio. Incluye `trap` de errores y pausa interactiva al terminar; requiere que el gestor de archivos ejecute el script en una terminal para que la ventana permanezca abierta.
 - `iniciar-servidor-debian.sh`: comprueba la versión de Go, elige la configuración de producción o de desarrollo y ejecuta el servidor.
 - `preparar-debian.sh` / `preparar-windows.ps1`: scripts de preparación de los entornos indicados por su nombre.
 - `oper.user.db`: archivo de credenciales de ejemplo usado por el código legado de `servidor/auth.go`; no es el almacén configurado por el servidor principal.
@@ -71,33 +72,32 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 - **Sockets TCP**: transporte de cliente a servidor. Los mensajes de aplicación se codifican como JSON, uno por línea. El protocolo permite autenticación, ejecución de comandos, ajuste del intervalo y envío de métricas. TCP no cifra el tráfico.
 - **SHA-256**: se almacena el hash de la contraseña en el archivo plano de usuarios. En autenticación, el servidor emite un nonce y cliente y servidor calculan/verifican una prueba SHA-256 ligada al usuario y al desafío; se compara en tiempo constante. Este esquema no reemplaza TLS ni un algoritmo especializado de almacenamiento de contraseñas.
 - **Goroutines y canales**: el servidor procesa conexiones concurrentes con un límite de 32; cada sesión intercala solicitudes, resultados y ticks de métricas. El cliente tiene una goroutine de lectura que publica eventos por un canal, mientras la GUI aplica cambios en el hilo de interfaz.
-- **Configuración y despliegue**: los parámetros se leen desde `.conf`; existen una configuración de desarrollo y plantillas de instalación para `/etc`. En Debian, systemd gestiona el ciclo de vida del servidor.
+- **Configuración y despliegue**: los parámetros se leen desde `.conf`; `instalar-servidor.sh` automatiza el despliegue en Debian y systemd gestiona el ciclo de vida. La configuración de producción vive en `/etc/configProyecto.conf`; `AllowedClientIP` debe corresponder a la IP VPN del cliente autorizado.
 - **Métricas**: se recopilan periódicamente en el servidor Linux y se transmiten al cliente; la GUI presenta porcentajes de CPU, memoria y disco. El disco se consulta siempre en la partición raíz (`/`) con `syscall.Statfs_t`, sin depender del directorio de trabajo del proceso.
 
 ## 4. Estado actual del desarrollo
 
-> No se encontró un PDF de referencia en los archivos disponibles del repositorio. Por ello, este estado se basa en el código, las pruebas y la documentación presentes; las marcas “implementado” no implican validación en una instalación Debian/Windows concreta.
+> Estado actualizado después de implementar y verificar el flujo técnico completo en un entorno real con Debian y Windows. No se encontró un PDF de referencia en los archivos del repositorio, por lo que no se atribuyen hitos específicos a ese documento.
 
 | Área | Estado verificable |
 |---|---|
 | Servidor TCP y configuración `.conf` | **Implementado**: carga parámetros, valida valores y acepta configuración por argumentos de línea de comandos. |
 | Autenticación | **Implementada**: archivo plano de hashes SHA-256, desafío aleatorio, verificación de prueba, autorización por IP/CIDR y limitación de intentos con espera progresiva. |
 | Ejecución remota | **Implementada**: comandos mediante `bash`/`sh`, directorio de trabajo persistente por sesión, timeout y límite de salida. No hay lista blanca de comandos. |
-| Métricas | **Implementadas**: reportes de CPU, procesos, memoria y disco raíz (`/`) mediante `syscall.Statfs_t`; envío periódico y consumo en el cliente. |
-| Cliente de consola | **Implementado**: exige IP, puerto y período en la línea de comandos, valida los tres valores, muestra el uso y sale con código 1 ante errores de argumentos; después conecta con el servidor. |
-| GUI Fyne | **Implementada**: interfaz de conexión, terminal, estado, historial y panel de métricas; se distribuye como módulo separado. |
-| Concurrencia | **Implementada**: goroutines, canales, sincronización de escritura y límite de conexiones. |
-| Pruebas automatizadas | **Hay pruebas** para argumentos del cliente, configuración, autenticación, sockets, shell, sesiones, logging y métricas de disco en Linux. La existencia de tests no acredita por sí sola que se hayan ejecutado en todos los entornos objetivo. |
-| systemd | **Artefacto implementado y runbook documentado**: `deploy/servidor-operativos.service` usa el usuario dedicado `operativos`, `StateDirectory`/`LogsDirectory` y endurecimiento; el README detalla instalación, permisos, comprobación de `systemd-analyze verify`, `enable --now` y arranque tras reinicio. **Pendiente de ejecutar/validar** en el Debian de destino. |
-| Logs | **Implementados en el código y validación documentada**: registros estructurados a stdout/journald y archivo, con rotación configurable; el README incluye comprobaciones de propietario/modo, mensajes de arranque, autenticación, comandos y `journalctl`. **Pendiente de ejecutar** en el despliegue real. |
+| Cliente de consola | **Implementado y verificado**: exige IP, puerto y período, valida argumentos, muestra el uso ante valores inválidos y conecta con el servidor. |
+| GUI Fyne | **Implementada y verificada en Windows**: interfaz de conexión, terminal, estado, historial y panel de métricas; se distribuye como módulo separado. |
+| Concurrencia | **Implementada y probada**: goroutines, canales, sincronización de escritura y límite de conexiones. |
+| Métricas | **Implementadas y verificadas**: reportes de CPU, procesos, memoria y disco de la raíz (`/`) con `syscall.Statfs_t`. |
+| Pruebas automatizadas | **Implementadas y ejecutadas** para argumentos del cliente, configuración, autenticación, sockets, shell, sesiones, logging y métricas de disco en Linux, además de validación funcional del flujo integrado en el entorno real. |
+| Instalación automatizada | **Implementada y verificada** mediante `instalar-servidor.sh`: usuario dedicado, permisos de directorios y archivos de `/etc/`, compilación con ruta absoluta de Go, unidad systemd, habilitación y arranque. El script captura errores con `trap` y espera Enter al finalizar. |
+| systemd | **Implementado, probado y verificado en Debian**: el servicio corre como `operativos`, usa `StateDirectory`/`LogsDirectory`, restricciones de seguridad y arranque automático. |
+| Logs | **Implementados, probados y verificados en Debian**: registros estructurados a stdout/journald y archivo con rotación configurable. |
+| Seguridad de red | **Documentada y verificada en despliegue**: el cliente y el servidor se comunican mediante VPN privada; `AllowedClientIP` se actualiza con la IP VPN del cliente. El protocolo de aplicación no cifra TCP por sí mismo. |
 | Paper/documento académico | **Pendiente de confirmar**: no se encontró un paper o manuscrito en el repositorio. Debe elaborarse o actualizarse según los requisitos de la asignatura. |
 | PDF de seguimiento | **No disponible** en los archivos inspeccionados; no es posible atribuirle hitos o pendientes específicos sin incorporarlo. |
 
-### Riesgos y validaciones pendientes
+### Pendientes de entrega
 
-1. Ejecutar en un Debian limpio el runbook del README para el servicio systemd: usuario dedicado, rutas de configuración/usuarios, permisos, arranque tras reinicio y lectura de logs en journald/archivo.
-2. Verificar conectividad y reglas de firewall/VPN con las IP configuradas para cliente y servidor.
-3. Probar la GUI en Windows con Fyne/CGo y confirmar la experiencia de ejecución en la plataforma objetivo.
-4. Documentar explícitamente en la entrega académica que el protocolo no cifra tráfico y que una cuenta autenticada obtiene los permisos del proceso servidor.
-5. Completar el paper y comparar el estado anterior con el PDF de avance cuando este esté disponible.
+1. Completar o actualizar el paper/documento académico según los requisitos de la asignatura.
+2. Incorporar el PDF de seguimiento, si se requiere mantener en este repositorio la trazabilidad de hitos académicos.
 
