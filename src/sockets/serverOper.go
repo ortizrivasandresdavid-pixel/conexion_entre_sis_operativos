@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,6 +16,16 @@ import (
 	"operativos/src/login"
 	"operativos/src/metrics"
 	"operativos/src/shell"
+)
+
+const (
+	// serverAuthTimeout es el margen para que el cliente complete la
+	// autenticación o el registro. Es amplio porque la GUI mantiene el socket
+	// abierto mientras el usuario escribe en el Paso 2.
+	serverAuthTimeout = 5 * time.Minute
+	// serverAuthResultGrace deja tiempo para leer la respuesta antes de que
+	// expire el plazo durante una espera progresiva.
+	serverAuthResultGrace = 30 * time.Second
 )
 
 type ServerConfig struct {
@@ -39,7 +50,7 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 	if _, err := shell.NewSession(); err != nil {
 		return fmt.Errorf("shell remoto no disponible: %w", err)
 	}
-	users, err := login.LoadUsers(config.UsersFile)
+	accounts, err := login.OpenUserStore(config.UsersFile)
 	if err != nil {
 		return err
 	}
@@ -95,7 +106,7 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 				defer handlers.Done()
 				defer func() { <-slots }()
 				defer activeConnections.Delete(conn)
-				if err := serveConnection(ctx, conn, config, users, attemptLimiter); err != nil {
+				if err := serveConnection(ctx, conn, config, accounts, attemptLimiter); err != nil {
 					slog.Warn("conexión finalizada con error",
 						"remota", conn.RemoteAddr().String(),
 						"error", err,
@@ -139,7 +150,7 @@ func serveConnection(
 	ctx context.Context,
 	conn net.Conn,
 	config ServerConfig,
-	users map[string]string,
+	accounts *login.UserStore,
 	attemptLimiter *login.AttemptLimiter,
 ) error {
 	defer conn.Close()
@@ -159,10 +170,10 @@ func serveConnection(
 	defer slog.Info("conexión cerrada", "ip", remoteIP.String())
 
 	reader := newMessageReader(conn)
-	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(serverAuthTimeout)); err != nil {
 		return fmt.Errorf("configurar tiempo límite de autenticación: %w", err)
 	}
-	if err := authenticateServer(ctx, conn, reader, users, config.MaxAuthAttempts, attemptLimiter, remoteIP.String()); err != nil {
+	if err := authenticateServer(ctx, conn, reader, accounts, config.MaxAuthAttempts, attemptLimiter, remoteIP.String()); err != nil {
 		return err
 	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
@@ -180,7 +191,7 @@ func authenticateServer(
 	ctx context.Context,
 	conn net.Conn,
 	reader *messageReader,
-	users map[string]string,
+	accounts *login.UserStore,
 	maxAttempts int,
 	attemptLimiter *login.AttemptLimiter,
 	clientIP string,
@@ -215,7 +226,7 @@ func authenticateServer(
 			}
 			return fmt.Errorf("autenticación bloqueada temporalmente para %s", clientIP)
 		}
-		if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		if err := conn.SetDeadline(time.Now().Add(serverAuthTimeout)); err != nil {
 			return fmt.Errorf("configurar tiempo límite de autenticación: %w", err)
 		}
 
@@ -231,6 +242,18 @@ func authenticateServer(
 		request, err := reader.Read()
 		if err != nil {
 			return err
+		}
+		if request.Type == "register" {
+			registered, err := handleRegistration(conn, accounts, request, nonce, clientIP, attemptLimiter)
+			if err != nil {
+				return err
+			}
+			if registered {
+				return nil
+			}
+			// Registro rechazado: se envía un desafío nuevo y se permite
+			// corregir el nombre de usuario sin reabrir el socket.
+			continue
 		}
 		if request.Type != "authenticate" || request.Username == "" {
 			slog.Warn("solicitud de autenticación inválida",
@@ -275,7 +298,7 @@ func authenticateServer(
 			continue
 		}
 
-		ok := login.VerifyProof(users, request.Username, nonce, request.Proof)
+		ok := accounts.Verify(request.Username, nonce, request.Proof)
 		if ok {
 			attemptLimiter.RecordSuccess(clientIP)
 			slog.Info("autenticación correcta",
@@ -286,7 +309,7 @@ func authenticateServer(
 		}
 
 		remaining, retryAfter = attemptLimiter.RecordFailure(clientIP, maxAttempts)
-		if err := conn.SetDeadline(time.Now().Add(retryAfter + 30*time.Second)); err != nil {
+		if err := conn.SetDeadline(time.Now().Add(retryAfter + serverAuthResultGrace)); err != nil {
 			return fmt.Errorf("configurar espera de autenticación: %w", err)
 		}
 		code := "AUTH_BACKOFF"
@@ -321,6 +344,57 @@ func authenticateServer(
 			return err
 		}
 	}
+}
+
+// handleRegistration valida y persiste una cuenta nueva. Devuelve registered
+// true solo si el usuario quedó creado; en cualquier rechazo responde con
+// register_result y deja la conexión lista para otro intento.
+func handleRegistration(
+	conn net.Conn,
+	accounts *login.UserStore,
+	request Message,
+	nonce string,
+	clientIP string,
+	attemptLimiter *login.AttemptLimiter,
+) (bool, error) {
+	username := strings.TrimSpace(request.Username)
+	if err := login.ValidateUsername(username); err != nil {
+		return false, sendRegistrationError(conn, "INVALID_USERNAME", username, err, clientIP)
+	}
+	hash, err := login.NormalizePasswordHash(request.PasswordHash)
+	if err != nil {
+		return false, sendRegistrationError(conn, "INVALID_HASH", username, err, clientIP)
+	}
+	if !login.VerifyProofHash(hash, username, nonce, request.Proof) {
+		return false, sendRegistrationError(
+			conn, "INVALID_PROOF", username,
+			fmt.Errorf("la prueba de registro no es válida"), clientIP,
+		)
+	}
+	if err := accounts.Register(username, hash); err != nil {
+		code := "REGISTER_FAILED"
+		if errors.Is(err, login.ErrUserExists) {
+			code = "USER_EXISTS"
+		}
+		return false, sendRegistrationError(conn, code, username, err, clientIP)
+	}
+
+	attemptLimiter.RecordSuccess(clientIP)
+	slog.Info("usuario registrado", "ip", clientIP, "usuario", username)
+	if err := writeMessage(conn, Message{Type: "register_result", OK: true, Username: username}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func sendRegistrationError(conn net.Conn, code, username string, cause error, clientIP string) error {
+	slog.Warn("registro rechazado",
+		"ip", clientIP,
+		"usuario", username,
+		"codigo", code,
+		"error", cause,
+	)
+	return writeMessage(conn, Message{Type: "register_result", Code: code, Error: cause.Error()})
 }
 
 func sendAuthResult(conn net.Conn, result Message) error {

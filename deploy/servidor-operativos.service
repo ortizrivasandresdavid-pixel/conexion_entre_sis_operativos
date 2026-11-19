@@ -24,6 +24,11 @@ StateDirectoryMode=0750
 LogsDirectory=proyecto-operativos
 LogsDirectoryMode=0750
 
+# El registro de cuentas desde la GUI agrega líneas al archivo de usuarios.
+# ProtectSystem=strict hace de solo lectura el resto de /etc, por lo que este
+# archivo se excluye explícitamente y se instala como root:operativos 0660.
+ReadWritePaths=/etc/configProyecto.users
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=servidor-operativos

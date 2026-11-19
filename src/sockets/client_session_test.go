@@ -19,6 +19,7 @@ func TestClientSessionAuthenticatesSetsPeriodAndSendsCommand(t *testing.T) {
 	defer listener.Close()
 
 	serverResult := make(chan error, 1)
+	store := testUserStore(t, map[string]string{"admin": login.HashPassword("secret")})
 	go func() {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -33,7 +34,7 @@ func TestClientSessionAuthenticatesSetsPeriodAndSendsCommand(t *testing.T) {
 			context.Background(),
 			conn,
 			reader,
-			map[string]string{"admin": login.HashPassword("secret")},
+			store,
 			3,
 			login.NewAttemptLimiter(),
 			"127.0.0.1",

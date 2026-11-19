@@ -1,6 +1,7 @@
 package login
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -49,5 +50,75 @@ func TestLoadUsersRejectsDuplicate(t *testing.T) {
 	}
 	if _, err := LoadUsers(path); err == nil {
 		t.Fatal("duplicate username was accepted")
+	}
+}
+
+func TestUserStoreRegisterPersistsAndAuthenticates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.conf")
+	// Sin salto de línea final: el registro debe insertar el separador.
+	content := "admin:" + HashPassword("linux")
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenUserStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const username = "operador"
+	const password = "clave-segura"
+	if err := store.Register(username, HashPassword(password)); err != nil {
+		t.Fatal(err)
+	}
+	const nonce = "challenge"
+	if !store.Verify(username, nonce, MakeProof(username, password, nonce)) {
+		t.Fatal("registered user cannot authenticate")
+	}
+
+	reopened, err := OpenUserStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reopened.Verify(username, nonce, MakeProof(username, password, nonce)) {
+		t.Fatal("registered user was not written to the users file")
+	}
+	if !reopened.Verify("admin", nonce, MakeProof("admin", "linux", nonce)) {
+		t.Fatal("registration broke the existing users in the file")
+	}
+
+	if err := store.Register(username, HashPassword("otra")); !errors.Is(err, ErrUserExists) {
+		t.Fatalf("duplicate register error = %v, want ErrUserExists", err)
+	}
+}
+
+func TestUserStoreRejectsInvalidRegistration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.conf")
+	if err := os.WriteFile(path, []byte("admin:"+HashPassword("linux")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenUserStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name     string
+		username string
+		hash     string
+		want     error
+	}{
+		{"empty username", "", HashPassword("x"), ErrInvalidUsername},
+		{"colon in username", "ope:rador", HashPassword("x"), ErrInvalidUsername},
+		{"space in username", "ope rador", HashPassword("x"), ErrInvalidUsername},
+		{"short hash", "operador", "abc", ErrInvalidPasswordHash},
+		{"non hexadecimal hash", "operador", "zz" + HashPassword("x")[2:], ErrInvalidPasswordHash},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := store.Register(testCase.username, testCase.hash)
+			if !errors.Is(err, testCase.want) {
+				t.Fatalf("Register(%q) error = %v, want %v", testCase.username, err, testCase.want)
+			}
+		})
 	}
 }

@@ -15,6 +15,7 @@ type Message struct {
 	Username          string            `json:"username,omitempty"`
 	Nonce             string            `json:"nonce,omitempty"`
 	Proof             string            `json:"proof,omitempty"`
+	PasswordHash      string            `json:"password_hash,omitempty"`
 	Command           string            `json:"command,omitempty"`
 	Output            string            `json:"output,omitempty"`
 	Error             string            `json:"error,omitempty"`

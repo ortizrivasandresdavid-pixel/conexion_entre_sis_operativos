@@ -3,10 +3,147 @@ package login
 import (
 	"bufio"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"unicode"
 )
+
+var (
+	// ErrUserExists indica que el nombre de usuario ya está registrado.
+	ErrUserExists = errors.New("el usuario ya existe")
+	// ErrInvalidUsername indica que el nombre no puede persistirse de forma segura.
+	ErrInvalidUsername = errors.New("nombre de usuario no válido")
+	// ErrInvalidPasswordHash indica que el hash recibido no tiene forma SHA-256 hexadecimal.
+	ErrInvalidPasswordHash = errors.New("hash SHA-256 no válido")
+)
+
+// UserStore mantiene en memoria los usuarios cargados y serializa las
+// escrituras sobre el archivo plano. Un único store se comparte entre todas las
+// conexiones del servidor, por lo que el mutex protege tanto el mapa como el
+// archivo de usuarios.
+type UserStore struct {
+	mu    sync.RWMutex
+	path  string
+	users map[string]string
+}
+
+// OpenUserStore carga el archivo de usuarios y devuelve un store listo para
+// verificar credenciales y registrar cuentas nuevas.
+func OpenUserStore(path string) (*UserStore, error) {
+	users, err := LoadUsers(path)
+	if err != nil {
+		return nil, err
+	}
+	return &UserStore{path: path, users: users}, nil
+}
+
+func (s *UserStore) Path() string {
+	return s.path
+}
+
+// Verify comprueba la prueba de autenticación de un usuario sin bloquear las
+// lecturas concurrentes del archivo de usuarios.
+func (s *UserStore) Verify(username, nonce, proof string) bool {
+	s.mu.RLock()
+	storedHash, ok := s.users[username]
+	s.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	return VerifyProofHash(storedHash, username, nonce, proof)
+}
+
+// Register valida y persiste una cuenta nueva. El usuario y el hash se
+// comprueban antes de escribir, y la comprobación de duplicados junto con la
+// escritura se realizan bajo el mismo mutex para evitar carreras entre
+// conexiones concurrentes.
+func (s *UserStore) Register(username, passwordHash string) error {
+	username = strings.TrimSpace(username)
+	if err := ValidateUsername(username); err != nil {
+		return err
+	}
+	hash, err := NormalizePasswordHash(passwordHash)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.users[username]; exists {
+		return ErrUserExists
+	}
+	if err := appendUser(s.path, username, hash); err != nil {
+		return err
+	}
+	s.users[username] = hash
+	return nil
+}
+
+// ValidateUsername rechaza nombres que romperían el formato usuario:hash o que
+// no podrían distinguirse de un comentario.
+func ValidateUsername(username string) error {
+	if username == "" || username != strings.TrimSpace(username) {
+		return fmt.Errorf("%w: no puede estar vacío ni empezar o terminar con espacios", ErrInvalidUsername)
+	}
+	if len(username) > 64 {
+		return fmt.Errorf("%w: como máximo 64 caracteres", ErrInvalidUsername)
+	}
+	for _, char := range username {
+		if char == ':' || char == '#' || unicode.IsSpace(char) || unicode.IsControl(char) {
+			return fmt.Errorf("%w: no puede contener ':', '#', espacios ni caracteres de control", ErrInvalidUsername)
+		}
+	}
+	return nil
+}
+
+// NormalizePasswordHash valida que el valor sea un SHA-256 hexadecimal de 64
+// caracteres y lo devuelve en minúsculas.
+func NormalizePasswordHash(passwordHash string) (string, error) {
+	hash := strings.ToLower(strings.TrimSpace(passwordHash))
+	if len(hash) != 64 {
+		return "", fmt.Errorf("%w: debe tener 64 caracteres hexadecimales", ErrInvalidPasswordHash)
+	}
+	if _, err := hex.DecodeString(hash); err != nil {
+		return "", fmt.Errorf("%w: contiene caracteres que no son hexadecimales", ErrInvalidPasswordHash)
+	}
+	return hash, nil
+}
+
+// appendUser agrega una línea al archivo sin reemplazarlo, de modo que las
+// cuentas registradas sobrevivan a reinicios y a ProtectSystem=strict (que hace
+// de solo lectura el resto de /etc).
+func appendUser(path, username, passwordHash string) error {
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0o640)
+	if err != nil {
+		return fmt.Errorf("abrir %s para registrar el usuario: %w", path, err)
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("comprobar %s: %w", path, err)
+	}
+	prefix := ""
+	if info.Size() > 0 {
+		lastByte := make([]byte, 1)
+		if _, err := file.ReadAt(lastByte, info.Size()-1); err != nil {
+			return fmt.Errorf("leer el final de %s: %w", path, err)
+		}
+		if lastByte[0] != '\n' {
+			prefix = "\n"
+		}
+	}
+	if _, err := file.WriteString(prefix + username + ":" + passwordHash + "\n"); err != nil {
+		return fmt.Errorf("escribir el usuario en %s: %w", path, err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sincronizar %s: %w", path, err)
+	}
+	return nil
+}
 
 func LoadUsers(path string) (map[string]string, error) {
 	file, err := os.Open(path)

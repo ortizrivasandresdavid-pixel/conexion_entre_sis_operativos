@@ -18,11 +18,21 @@ func MakeProof(username, password, nonce string) string {
 
 func VerifyProof(users map[string]string, username, nonce, proof string) bool {
 	storedHash, ok := users[username]
-	if !ok || len(proof) != sha256.Size*2 {
+	if !ok {
+		return false
+	}
+	return VerifyProofHash(storedHash, username, nonce, proof)
+}
+
+// VerifyProofHash comprueba una prueba de autenticación contra un hash ya
+// almacenado. Se usa tanto en el login como al validar el registro de una
+// cuenta nueva, donde el hash llega en la propia solicitud.
+func VerifyProofHash(storedHash, username, nonce, proof string) bool {
+	if len(storedHash) != sha256.Size*2 || len(proof) != sha256.Size*2 {
 		return false
 	}
 
-	expected := makeProof(username, storedHash, nonce)
+	expected := makeProof(username, strings.ToLower(storedHash), nonce)
 	return subtle.ConstantTimeCompare([]byte(strings.ToLower(proof)), []byte(expected)) == 1
 }
 

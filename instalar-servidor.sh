@@ -36,7 +36,15 @@ sudo install -o root -g root -m 0755 dist/linux/servidor-operativos /usr/local/b
 # 4. Instalar archivos de configuracion
 echo "Instalando configuracion en /etc/..."
 sudo install -o root -g operativos -m 0640 deploy/configProyecto.conf /etc/configProyecto.conf
-sudo install -o root -g operativos -m 0640 deploy/configProyecto.users /etc/configProyecto.users
+# El archivo de usuarios debe ser escribible por el grupo operativos para que
+# la GUI pueda registrar cuentas. Si ya existe se conserva: reinstalar no debe
+# borrar los usuarios creados desde la aplicacion.
+if [ -f /etc/configProyecto.users ]; then
+  sudo chown root:operativos /etc/configProyecto.users
+  sudo chmod 0660 /etc/configProyecto.users
+else
+  sudo install -o root -g operativos -m 0660 deploy/configProyecto.users /etc/configProyecto.users
+fi
 
 # 5. Instalar unidad de systemd
 echo "Configurando servicio systemd..."

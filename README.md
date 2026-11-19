@@ -23,7 +23,7 @@ Proyecto académico multiplataforma: servidor en Debian/Linux y clientes para Wi
 <a id="resumen-arquitectura"></a>
 ## Resumen del proyecto y arquitectura rápida
 
-El servidor escucha en TCP, autoriza la IP/CIDR del cliente, autentica usuarios con un archivo plano de hashes SHA-256 y administra una sesión de comandos. Durante la sesión reporta CPU, memoria, procesos y espacio usado en la partición raíz (`/`). Los mensajes de aplicación son JSON delimitado por líneas.
+El servidor escucha en TCP, autoriza la IP/CIDR del cliente, autentica usuarios con un archivo plano de hashes SHA-256, permite registrar cuentas nuevas desde la GUI y administra una sesión de comandos. Durante la sesión reporta CPU, memoria, procesos y espacio usado en la partición raíz (`/`). Los mensajes de aplicación son JSON delimitado por líneas.
 
 El flujo técnico —despliegue systemd, logs estructurados, métricas, cliente de consola y GUI Fyne— está implementado, probado y verificado en un entorno real con Debian y Windows.
 
@@ -52,6 +52,7 @@ El flujo técnico —despliegue systemd, logs estructurados, métricas, cliente 
 - La conexión TCP de la aplicación no cifra comandos, respuestas ni métricas. Para conectar equipos distintos, utiliza una VPN privada (por ejemplo, Tailscale o WireGuard); no publiques ni redirijas el puerto `2306` a Internet.
 - El servidor no aplica una lista blanca: un usuario autenticado puede ejecutar comandos con los permisos del proceso servidor. En producción, el servicio corre como el usuario dedicado `operativos`, no como `root`.
 - La autenticación usa un desafío aleatorio y una prueba basada en SHA-256. La contraseña no se envía directamente; este mecanismo no sustituye TLS ni un algoritmo especializado de almacenamiento de contraseñas.
+- El registro desde la GUI permite crear cuentas nuevas y envía el hash SHA-256 de la contraseña por el canal TCP; en un canal sin cifrar ese hash equivale a la credencial. Restringe `AllowedClientIP` y usa una VPN privada. El registro no sustituye un alta administrativa controlada.
 - Una sesión admite un comando a la vez; cada comando tiene un límite de cinco minutos y una salida máxima de 2 MiB. No hay TTY ni ejecución interactiva para programas como `vim`, `top` interactivo o `sudo` que soliciten contraseña.
 - El servidor admite hasta 32 conexiones concurrentes y limita los intentos fallidos por IP. El cliente no se reconecta automáticamente.
 
@@ -221,7 +222,7 @@ También se puede ejecutar con Bash:
 bash ./instalar-servidor.sh
 ```
 
-El usuario actual debe poder usar `sudo`. El script configura el usuario `operativos` sin shell de inicio de sesión, directorios `0750`, configuración y usuarios con propietario `root:operativos` y modo `0640`, binario de servicio y unidad systemd. Al final imprime el estado del servicio. Su `trap` informa errores y la pausa interactiva espera Enter; desde el administrador de archivos, selecciona **Ejecutar en un terminal** para conservar la ventana abierta.
+El usuario actual debe poder usar `sudo`. El script configura el usuario `operativos` sin shell de inicio de sesión, directorios `0750`, configuración con propietario `root:operativos` y modo `0640`, archivo de usuarios `root:operativos` con modo `0660` (el servicio necesita escribir las cuentas registradas), binario de servicio y unidad systemd. Al final imprime el estado del servicio. Su `trap` informa errores y la pausa interactiva espera Enter; desde el administrador de archivos, selecciona **Ejecutar en un terminal** para conservar la ventana abierta. Si `/etc/configProyecto.users` ya existe, el instalador conserva su contenido y solo corrige propietario y permisos.
 
 > Revisa `deploy/configProyecto.conf` antes de instalar: el valor de `AllowedClientIP` debe ser la IP VPN del cliente autorizado. Si editas el archivo de `/etc/` después de la instalación, reinicia systemd como se indica arriba.
 
@@ -241,6 +242,8 @@ printf %s 'ReemplazaEstaContraseña' | sha256sum
 ```
 
 Reemplaza cualquier credencial de ejemplo antes de utilizar el sistema fuera de una práctica local. Restringe el acceso a los archivos de credenciales; no almacenes contraseñas en texto claro.
+
+La GUI puede crear cuentas desde la pestaña **Registrarse** del Paso 2. El servidor valida que el usuario no exista, añade la línea `usuario:hash_sha256` al final del archivo y confirma el alta antes de iniciar la sesión. El archivo se instala como `root:operativos 0660` y la unidad declara `ReadWritePaths=/etc/configProyecto.users`, de modo que el usuario `operativos` puede escribir pese a `ProtectSystem=strict`. Si el archivo no tiene permiso de escritura, el registro falla con un error visible en la GUI y el login existente sigue funcionando.
 
 </details>
 
@@ -270,6 +273,7 @@ namei -l /etc/configProyecto.conf
 namei -l /etc/configProyecto.users
 sudo -u operativos test -r /etc/configProyecto.conf && echo "configuración legible"
 sudo -u operativos test -r /etc/configProyecto.users && echo "usuarios legible"
+sudo -u operativos test -w /etc/configProyecto.users && echo "usuarios escribible"
 sudo -u operativos test -w /var/lib/servidor-operativos && echo "estado escribible"
 sudo -u operativos test -w /var/log/proyecto-operativos && echo "logs escribible"
 ```
@@ -323,7 +327,12 @@ El programa valida los tres argumentos y termina con un mensaje de uso si falta 
 <a id="cliente-fyne"></a>
 ### Interfaz gráfica Fyne
 
-La GUI presenta campos de conexión y credenciales, terminal remota, historial y panel de CPU, memoria y disco. Reutiliza el protocolo de `src/sockets`; la recepción de mensajes ocurre concurrentemente. Solo permite un comando pendiente a la vez.
+La GUI presenta un flujo en dos pasos antes de la terminal remota y el panel de CPU, memoria y disco:
+
+1. **Conexión al servidor:** campos `Server IP`, `Port` y `Period (s)` con los valores por defecto `100.83.168.60`, `2306` y `5`. El botón **Connect to server** abre el socket TCP y valida la conectividad y la autorización por IP del servidor; si falla, el error aparece en la misma tarjeta sin avanzar.
+2. **Acceso de usuario:** dos pestañas del mismo tamaño, **Iniciar sesion** y **Registrarse**, comparten el indicador `Connected to <IP>:<Puerto>`. El login usa la autenticación por desafío y SHA-256 e informa los intentos restantes. El registro valida el nombre (sin `:`), exige que las contraseñas coincidan, calcula el SHA-256 y lo envía al servidor. **Cambiar servidor** cierra el socket y vuelve al Paso 1.
+
+Tras autenticarse o registrarse, la ventana muestra la terminal, el historial de reportes y las métricas. Reutiliza el protocolo de `src/sockets`; la recepción de mensajes ocurre concurrentemente. Solo permite un comando pendiente a la vez.
 
 <details>
 <summary>Ejecutar o compilar la GUI en Windows</summary>
@@ -349,7 +358,7 @@ go -C .\src\opergui build -o ..\..\cliente-gui.exe .
 .\cliente-gui.exe
 ```
 
-En la ventana, introduce la IP VPN del servidor, puerto `2306`, período de reportes y credenciales; después selecciona **Conectar**.
+En la ventana, introduce la IP VPN del servidor, el puerto `2306` y el período; selecciona **Connect to server**, elige **Iniciar sesion** o **Registrarse** en el Paso 2 y completa las credenciales. Si el servidor autoriza la conexión y el acceso, se abre la terminal y el panel de métricas.
 
 </details>
 

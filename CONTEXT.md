@@ -40,14 +40,15 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 
 ### `src/`
 
-- `sockets/protocol.go`: define el formato JSON de los mensajes de aplicación y sus operaciones de lectura/escritura sobre TCP.
-- `sockets/serverOper.go`: servidor TCP; aplica restricción de IP/CIDR, autenticación, límite de conexiones, comandos, período de métricas y cierre ordenado.
-- `sockets/clientOper.go`: operaciones de cliente y flujo de autenticación/sesión.
+- `sockets/protocol.go`: define el formato JSON de los mensajes de aplicación (autenticación, registro, comandos, métricas) y sus operaciones de lectura/escritura sobre TCP.
+- `sockets/serverOper.go`: servidor TCP; aplica restricción de IP/CIDR, autenticación y registro de usuarios, límite de conexiones, comandos, período de métricas y cierre ordenado.
+- `sockets/clientOper.go`: operaciones del cliente de consola y flujo de autenticación/sesión.
 - `sockets/client_session.go`: API concurrente de sesión del cliente; usa goroutine de lectura, canal de eventos, identificadores de solicitudes y escritura sincronizada.
-- `sockets/auth_result.go`: interpretación de resultados y errores de autenticación.
-- `sockets/*_test.go`: pruebas del protocolo, sesiones y comportamiento del servidor.
+- `sockets/client_access.go`: flujo de acceso en dos pasos para la GUI; `ConnectAccess` valida el socket y la IP, y `AccessConnection.Login`/`Register` completan el acceso antes de entregar la `ClientSession`.
+- `sockets/auth_result.go`: interpretación de resultados y errores de autenticación y registro.
+- `sockets/*_test.go`: pruebas del protocolo, sesiones, registro y comportamiento del servidor.
 - `login/login.go`: generación y verificación de pruebas de autenticación basadas en SHA-256; la contraseña no se envía directamente por el protocolo.
-- `login/archivos.go`: carga y validación del archivo plano de usuarios.
+- `login/archivos.go`: carga y validación del archivo plano de usuarios, y `UserStore` con `sync.RWMutex` para verificar credenciales y registrar cuentas nuevas de forma concurrente.
 - `login/attempts.go`: control de intentos fallidos y espera progresiva por dirección IP.
 - `login/*_test.go`: pruebas de autenticación, lectura de usuarios y límites de intentos.
 - `shell/shell.go`: ejecución de comandos mediante `bash` o `sh`, conservación del directorio por sesión, límite de duración y tamaño de salida.
@@ -60,8 +61,9 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 - `logging/logging.go`: logger estructurado con `log/slog`, salida a consola/archivo y rotación por tamaño.
 - `logging/logging_test.go`: pruebas de escritura y rotación de logs.
 - `opergui/`: módulo Go separado para evitar incorporar Fyne a las dependencias del servidor o de la consola. `go.mod` declara Fyne v2.8.2 y reemplaza el módulo `operativos` por la raíz del repositorio.
-- `opergui/proyOperGUI.go`: aplicación Fyne; formulario de conexión, autenticación, terminal, historial y panel de métricas. La lectura de sesión se realiza concurrentemente y las actualizaciones visuales se envían al hilo de UI mediante `fyne.Do`.
-- `opergui/terminal_theme.go`: tema visual de la interfaz gráfica.
+- `opergui/proyOperGUI.go`: aplicación Fyne; flujo de acceso en dos pasos (conexión, login/registro), terminal, historial y panel de métricas. La lectura de sesión se realiza concurrentemente y las actualizaciones visuales se envían al hilo de UI mediante `fyne.Do`.
+- `opergui/access_views.go`: vistas del Paso 1 (socket) y del Paso 2 (pestañas `Iniciar sesion`/`Registrarse`) con tarjetas de tamaño fijo y validación de credenciales.
+- `opergui/terminal_theme.go`: tema visual de la interfaz gráfica; paleta oscura, acentos verdes y tipografía monoespaciada.
 - `opergui/go.sum`: sumas de verificación de dependencias del módulo GUI.
 - `saludo.go`, `shell.go`, `hilos/` y `opergui/` son componentes auxiliares o de ejercicios previos; las rutas principales de cliente y servidor son `cliente/`, `servidor/` y `src/sockets/`.
 
@@ -83,6 +85,7 @@ El proyecto tiene fines académicos y no sustituye SSH para administración de s
 |---|---|
 | Servidor TCP y configuración `.conf` | **Implementado**: carga parámetros, valida valores y acepta configuración por argumentos de línea de comandos. |
 | Autenticación | **Implementada**: archivo plano de hashes SHA-256, desafío aleatorio, verificación de prueba, autorización por IP/CIDR y limitación de intentos con espera progresiva. |
+| Registro de usuarios | **Implementado**: la GUI valida los datos, envía el SHA-256 y el servidor persiste `usuario:hash` con `UserStore` y `sync.RWMutex`; el archivo se instala como `root:operativos 0660` y se declara en `ReadWritePaths=`. |
 | Ejecución remota | **Implementada**: comandos mediante `bash`/`sh`, directorio de trabajo persistente por sesión, timeout y límite de salida. No hay lista blanca de comandos. |
 | Cliente de consola | **Implementado y verificado**: exige IP, puerto y período, valida argumentos, muestra el uso ante valores inválidos y conecta con el servidor. |
 | GUI Fyne | **Implementada y verificada en Windows**: interfaz de conexión, terminal, estado, historial y panel de métricas; se distribuye como módulo separado. |

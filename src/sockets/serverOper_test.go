@@ -3,16 +3,40 @@ package sockets
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"operativos/src/login"
 )
 
+// testUserStore crea un archivo de usuarios temporal y devuelve el store que
+// comparten las conexiones del servidor en las pruebas.
+func testUserStore(t *testing.T, users map[string]string) *login.UserStore {
+	t.Helper()
+	lines := make([]string, 0, len(users))
+	for username, hash := range users {
+		lines = append(lines, username+":"+hash)
+	}
+	path := filepath.Join(t.TempDir(), "users.conf")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := login.OpenUserStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
 func TestAuthenticateServerAllowsRetryWithinLimit(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer serverConn.Close()
 	defer clientConn.Close()
+
+	store := testUserStore(t, map[string]string{"admin": login.HashPassword("linux")})
 
 	serverDone := make(chan error, 1)
 	go func() {
@@ -20,7 +44,7 @@ func TestAuthenticateServerAllowsRetryWithinLimit(t *testing.T) {
 			context.Background(),
 			serverConn,
 			newMessageReader(serverConn),
-			map[string]string{"admin": login.HashPassword("linux")},
+			store,
 			2,
 			login.NewAttemptLimiter(),
 			"127.0.0.1",
@@ -80,13 +104,15 @@ func TestAuthenticateServerLocksAfterMaxAttempts(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
 
+	store := testUserStore(t, map[string]string{"admin": login.HashPassword("linux")})
+
 	serverDone := make(chan error, 1)
 	go func() {
 		serverDone <- authenticateServer(
 			context.Background(),
 			serverConn,
 			newMessageReader(serverConn),
-			map[string]string{"admin": login.HashPassword("linux")},
+			store,
 			1,
 			login.NewAttemptLimiter(),
 			"127.0.0.1",
@@ -117,6 +143,121 @@ func TestAuthenticateServerLocksAfterMaxAttempts(t *testing.T) {
 	}
 	if err := <-serverDone; err == nil {
 		t.Fatal("authentication succeeded after exhausting attempts")
+	}
+}
+
+func TestAuthenticateServerRegistersUserAndPersistsIt(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	store := testUserStore(t, map[string]string{"admin": login.HashPassword("linux")})
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- authenticateServer(
+			context.Background(),
+			serverConn,
+			newMessageReader(serverConn),
+			store,
+			3,
+			login.NewAttemptLimiter(),
+			"127.0.0.1",
+		)
+	}()
+
+	reader := newMessageReader(clientConn)
+	challenge, err := reader.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const username = "operador"
+	const password = "clave-segura"
+	if err := writeMessage(clientConn, Message{
+		Type:         "register",
+		Username:     username,
+		PasswordHash: login.HashPassword(password),
+		Proof:        login.MakeProof(username, password, challenge.Nonce),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := reader.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Type != "register_result" || !result.OK {
+		t.Fatalf("register result = %#v, want successful register_result", result)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+
+	// El usuario debe quedar autenticable en memoria y persistido en disco.
+	const nonce = "verification-nonce"
+	if !store.Verify(username, nonce, login.MakeProof(username, password, nonce)) {
+		t.Fatal("registered user cannot authenticate")
+	}
+	reopened, err := login.OpenUserStore(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reopened.Verify(username, nonce, login.MakeProof(username, password, nonce)) {
+		t.Fatal("registered user was not persisted to the users file")
+	}
+}
+
+func TestAuthenticateServerRejectsDuplicateRegistration(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	store := testUserStore(t, map[string]string{"admin": login.HashPassword("linux")})
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- authenticateServer(
+			context.Background(),
+			serverConn,
+			newMessageReader(serverConn),
+			store,
+			3,
+			login.NewAttemptLimiter(),
+			"127.0.0.1",
+		)
+	}()
+
+	reader := newMessageReader(clientConn)
+	challenge, err := reader.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const username = "admin"
+	const password = "otra-clave"
+	if err := writeMessage(clientConn, Message{
+		Type:         "register",
+		Username:     username,
+		PasswordHash: login.HashPassword(password),
+		Proof:        login.MakeProof(username, password, challenge.Nonce),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := reader.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Type != "register_result" || result.OK || result.Code != "USER_EXISTS" {
+		t.Fatalf("register result = %#v, want USER_EXISTS rejection", result)
+	}
+
+	// El servidor mantiene la conexión y envía un desafío nuevo para reintentar.
+	next, err := reader.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Type != "auth_challenge" {
+		t.Fatalf("message after rejected register = %q, want auth_challenge", next.Type)
+	}
+	if err := serverConn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverDone; err == nil {
+		t.Fatal("server accepted a duplicate registration")
 	}
 }
 
