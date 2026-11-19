@@ -5,7 +5,6 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 trap 'echo "❌ Error en la línea $LINENO. Revisa el mensaje anterior." >&2' ERR
 
-# Si se ejecuta sin terminal, abrir una terminal visible.
 if [[ ! -t 0 || ! -t 1 ]]; then
     SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
     TERMINAL_COMMAND='
@@ -31,7 +30,6 @@ if [[ ! -t 0 || ! -t 1 ]]; then
     fi
 fi
 
-# Solicitar elevación mediante PolicyKit; no requiere que el usuario esté en sudoers.
 if [[ "$EUID" -ne 0 ]]; then
     SCRIPT_PATH="$(readlink -f -- "${BASH_SOURCE[0]}")"
     if ! command -v pkexec >/dev/null 2>&1; then
@@ -42,7 +40,6 @@ if [[ "$EUID" -ne 0 ]]; then
     exec pkexec "$SCRIPT_PATH" "$@"
 fi
 
-# Detectar la versión mínima de Go desde go.mod.
 MIN_GO_VERSION="1.22.0"
 if [[ -f "$ROOT_DIR/go.mod" ]]; then
     MOD_GO="$(awk '$1 == "go" { print $2; exit }' "$ROOT_DIR/go.mod")"
@@ -85,11 +82,14 @@ cleanup() {
 trap cleanup EXIT
 
 echo "[2/3] Verificando Go (mínimo requerido: $MIN_GO_VERSION)..."
-GO_BIN="$(command -v go || true)"
-GO_VERSION=""
-if [[ -z "$GO_BIN" && -x /usr/local/go/bin/go ]]; then
+GO_BIN=""
+if [[ -x /usr/local/go/bin/go ]]; then
     GO_BIN="/usr/local/go/bin/go"
+elif command -v go >/dev/null 2>&1; then
+    GO_BIN="$(command -v go)"
 fi
+
+GO_VERSION=""
 if [[ -n "$GO_BIN" ]]; then
     GO_VERSION="$("$GO_BIN" version | sed -E 's/^go version go([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')"
     [[ "$GO_VERSION" =~ ^[0-9]+\.[0-9]+$ ]] && GO_VERSION="${GO_VERSION}.0"
@@ -135,10 +135,10 @@ sys.exit(1)
     IFS=$'\t' read -r GO_FILENAME GO_SHA256 GO_VERSION <<<"$GO_INFO"
     curl -fsSL "https://go.dev/dl/$GO_FILENAME" -o "$TMP_DIR/go.tar.gz"
     printf '%s  %s\n' "$GO_SHA256" "$TMP_DIR/go.tar.gz" | sha256sum --check
-    GO_DIR="/usr/local/lib/go${GO_VERSION}"
-    install -d "$GO_DIR"
-    tar -C "$GO_DIR" --strip-components=1 -xzf "$TMP_DIR/go.tar.gz"
-    GO_BIN="$GO_DIR/bin/go"
+    rm -rf /usr/local/go
+    install -d /usr/local/go
+    tar -C /usr/local/go --strip-components=1 -xzf "$TMP_DIR/go.tar.gz"
+    GO_BIN="/usr/local/go/bin/go"
 fi
 
 GO_VERSION="$("$GO_BIN" version | sed -E 's/^go version go([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/')"
@@ -147,6 +147,9 @@ if [[ -z "$GO_VERSION" ]] || dpkg --compare-versions "$GO_VERSION" lt "$MIN_GO_V
     echo "Se requiere Go $MIN_GO_VERSION o posterior; no se pudo instalar una versión compatible." >&2
     exit 1
 fi
+
+install -d /usr/local/bin
+ln -sf "$GO_BIN" /usr/local/bin/go
 echo "Usando Go $GO_VERSION: $("$GO_BIN" version)"
 
 echo "[3/3] Verificando Tailscale..."
