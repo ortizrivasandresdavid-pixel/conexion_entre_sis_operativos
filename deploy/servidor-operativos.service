@@ -32,7 +32,7 @@ SyslogIdentifier=servidor-operativos
 # ProtectSystem=full conserva /usr y /boot en solo lectura y deja que
 # useradd actualice /etc y sus archivos auxiliares de /var.
 UMask=0027
-NoNewPrivileges=true
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=false
