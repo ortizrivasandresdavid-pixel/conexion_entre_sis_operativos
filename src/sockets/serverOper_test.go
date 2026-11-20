@@ -12,6 +12,11 @@ import (
 	"operativos/src/login"
 )
 
+type authenticationOutcome struct {
+	username string
+	err      error
+}
+
 // testUserStore crea un archivo de usuarios temporal y devuelve el store que
 // comparten las conexiones del servidor en las pruebas.
 func testUserStore(t *testing.T, users map[string]string) *login.UserStore {
@@ -24,7 +29,7 @@ func testUserStore(t *testing.T, users map[string]string) *login.UserStore {
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := login.OpenUserStore(path)
+	store, err := login.OpenUserStoreWithProvisioner(path, func(string) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,9 +43,9 @@ func TestAuthenticateServerAllowsRetryWithinLimit(t *testing.T) {
 
 	store := testUserStore(t, map[string]string{"admin": login.HashPassword("linux")})
 
-	serverDone := make(chan error, 1)
+	serverDone := make(chan authenticationOutcome, 1)
 	go func() {
-		serverDone <- authenticateServer(
+		username, err := authenticateServer(
 			context.Background(),
 			serverConn,
 			newMessageReader(serverConn),
@@ -49,6 +54,7 @@ func TestAuthenticateServerAllowsRetryWithinLimit(t *testing.T) {
 			login.NewAttemptLimiter(),
 			"127.0.0.1",
 		)
+		serverDone <- authenticationOutcome{username: username, err: err}
 	}()
 
 	reader := newMessageReader(clientConn)
@@ -95,8 +101,12 @@ func TestAuthenticateServerAllowsRetryWithinLimit(t *testing.T) {
 			retryStartedAt = time.Now()
 		}
 	}
-	if err := <-serverDone; err != nil {
-		t.Fatal(err)
+	outcome := <-serverDone
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	if outcome.username != "admin" {
+		t.Fatalf("authenticated username = %q, want admin", outcome.username)
 	}
 }
 
@@ -108,7 +118,7 @@ func TestAuthenticateServerLocksAfterMaxAttempts(t *testing.T) {
 
 	serverDone := make(chan error, 1)
 	go func() {
-		serverDone <- authenticateServer(
+		_, err := authenticateServer(
 			context.Background(),
 			serverConn,
 			newMessageReader(serverConn),
@@ -117,6 +127,7 @@ func TestAuthenticateServerLocksAfterMaxAttempts(t *testing.T) {
 			login.NewAttemptLimiter(),
 			"127.0.0.1",
 		)
+		serverDone <- err
 	}()
 
 	reader := newMessageReader(clientConn)
@@ -151,9 +162,9 @@ func TestAuthenticateServerRegistersUserAndPersistsIt(t *testing.T) {
 	defer clientConn.Close()
 
 	store := testUserStore(t, map[string]string{"admin": login.HashPassword("linux")})
-	serverDone := make(chan error, 1)
+	serverDone := make(chan authenticationOutcome, 1)
 	go func() {
-		serverDone <- authenticateServer(
+		username, err := authenticateServer(
 			context.Background(),
 			serverConn,
 			newMessageReader(serverConn),
@@ -162,6 +173,7 @@ func TestAuthenticateServerRegistersUserAndPersistsIt(t *testing.T) {
 			login.NewAttemptLimiter(),
 			"127.0.0.1",
 		)
+		serverDone <- authenticationOutcome{username: username, err: err}
 	}()
 
 	reader := newMessageReader(clientConn)
@@ -186,8 +198,12 @@ func TestAuthenticateServerRegistersUserAndPersistsIt(t *testing.T) {
 	if result.Type != "register_result" || !result.OK {
 		t.Fatalf("register result = %#v, want successful register_result", result)
 	}
-	if err := <-serverDone; err != nil {
-		t.Fatal(err)
+	outcome := <-serverDone
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	if outcome.username != username {
+		t.Fatalf("registered username = %q, want %q", outcome.username, username)
 	}
 
 	// El usuario debe quedar autenticable en memoria y persistido en disco.
@@ -211,7 +227,7 @@ func TestAuthenticateServerRejectsDuplicateRegistration(t *testing.T) {
 	store := testUserStore(t, map[string]string{"admin": login.HashPassword("linux")})
 	serverDone := make(chan error, 1)
 	go func() {
-		serverDone <- authenticateServer(
+		_, err := authenticateServer(
 			context.Background(),
 			serverConn,
 			newMessageReader(serverConn),
@@ -220,6 +236,7 @@ func TestAuthenticateServerRejectsDuplicateRegistration(t *testing.T) {
 			login.NewAttemptLimiter(),
 			"127.0.0.1",
 		)
+		serverDone <- err
 	}()
 
 	reader := newMessageReader(clientConn)

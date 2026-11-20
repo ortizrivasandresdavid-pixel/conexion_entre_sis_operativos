@@ -53,6 +53,17 @@ func TestLoadUsersRejectsDuplicate(t *testing.T) {
 	}
 }
 
+func TestLoadUsersRejectsInvalidLinuxUsername(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.conf")
+	content := "Admin:" + HashPassword("linux") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadUsers(path); err == nil {
+		t.Fatal("invalid Linux username was accepted")
+	}
+}
+
 func TestUserStoreRegisterPersistsAndAuthenticates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "users.conf")
 	// Sin salto de línea final: el registro debe insertar el separador.
@@ -60,7 +71,14 @@ func TestUserStoreRegisterPersistsAndAuthenticates(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := OpenUserStore(path)
+	provisionCalls := 0
+	store, err := OpenUserStoreWithProvisioner(path, func(username string) error {
+		provisionCalls++
+		if username != "operador" {
+			t.Fatalf("provisioned username = %q, want operador", username)
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +87,9 @@ func TestUserStoreRegisterPersistsAndAuthenticates(t *testing.T) {
 	const password = "clave-segura"
 	if err := store.Register(username, HashPassword(password)); err != nil {
 		t.Fatal(err)
+	}
+	if provisionCalls != 1 {
+		t.Fatalf("provision calls = %d, want 1", provisionCalls)
 	}
 	const nonce = "challenge"
 	if !store.Verify(username, nonce, MakeProof(username, password, nonce)) {
@@ -88,6 +109,38 @@ func TestUserStoreRegisterPersistsAndAuthenticates(t *testing.T) {
 
 	if err := store.Register(username, HashPassword("otra")); !errors.Is(err, ErrUserExists) {
 		t.Fatalf("duplicate register error = %v, want ErrUserExists", err)
+	}
+	if provisionCalls != 1 {
+		t.Fatalf("duplicate registration provision calls = %d, want 1", provisionCalls)
+	}
+}
+
+func TestUserStoreDoesNotPersistWhenSystemProvisioningFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.conf")
+	if err := os.WriteFile(path, []byte("admin:"+HashPassword("linux")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	provisionErr := errors.New("useradd failed")
+	store, err := OpenUserStoreWithProvisioner(path, func(string) error {
+		return provisionErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.Register("operador", HashPassword("clave"))
+	if !errors.Is(err, provisionErr) {
+		t.Fatalf("Register error = %v, want provisioning error", err)
+	}
+	if store.Verify("operador", "nonce", MakeProof("operador", "clave", "nonce")) {
+		t.Fatal("user was registered in memory after provisioning failed")
+	}
+	users, err := LoadUsers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := users["operador"]; exists {
+		t.Fatal("user was persisted after provisioning failed")
 	}
 }
 
@@ -110,6 +163,9 @@ func TestUserStoreRejectsInvalidRegistration(t *testing.T) {
 		{"empty username", "", HashPassword("x"), ErrInvalidUsername},
 		{"colon in username", "ope:rador", HashPassword("x"), ErrInvalidUsername},
 		{"space in username", "ope rador", HashPassword("x"), ErrInvalidUsername},
+		{"uppercase username", "Operador", HashPassword("x"), ErrInvalidUsername},
+		{"leading hyphen", "-operador", HashPassword("x"), ErrInvalidUsername},
+		{"username over 32 characters", "operador1234567890123456789012345", HashPassword("x"), ErrInvalidUsername},
 		{"short hash", "operador", "abc", ErrInvalidPasswordHash},
 		{"non hexadecimal hash", "operador", "zz" + HashPassword("x")[2:], ErrInvalidPasswordHash},
 	}
@@ -120,5 +176,26 @@ func TestUserStoreRejectsInvalidRegistration(t *testing.T) {
 				t.Fatalf("Register(%q) error = %v, want %v", testCase.username, err, testCase.want)
 			}
 		})
+	}
+}
+
+func TestUserStoreEnsureSystemUserUsesProvisioner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.conf")
+	if err := os.WriteFile(path, []byte("admin:"+HashPassword("linux")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	provisioned := ""
+	store, err := OpenUserStoreWithProvisioner(path, func(username string) error {
+		provisioned = username
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.EnsureSystemUser("admin"); err != nil {
+		t.Fatal(err)
+	}
+	if provisioned != "admin" {
+		t.Fatalf("provisioned username = %q, want admin", provisioned)
 	}
 }

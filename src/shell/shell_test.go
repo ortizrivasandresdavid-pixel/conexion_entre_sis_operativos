@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -16,11 +17,49 @@ func newTestSession(t *testing.T) *Session {
 	if runtime.GOOS == "windows" {
 		t.Skip("la ejecución remota de comandos requiere Linux o macOS")
 	}
-	session, err := NewSession()
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := NewSession(currentUser.Username)
 	if err != nil {
 		t.Skipf("shell no disponible: %v", err)
 	}
 	return session
+}
+
+func TestSessionRunsAsSelectedUserInHomeDirectory(t *testing.T) {
+	session := newTestSession(t)
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := session.Execute(context.Background(), `printf '%s\n%s\n%s\n%s\n%s\n' "$(whoami)" "$HOME" "$USER" "$LOGNAME" "$SHELL"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(result.Output), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("identity output = %q, want five lines", result.Output)
+	}
+	if lines[0] != currentUser.Username || lines[2] != currentUser.Username || lines[3] != currentUser.Username {
+		t.Fatalf("whoami/USER/LOGNAME = %q/%q/%q, want %q", lines[0], lines[2], lines[3], currentUser.Username)
+	}
+	if lines[1] != currentUser.HomeDir || result.Dir != currentUser.HomeDir {
+		t.Fatalf("HOME/dir = %q/%q, want %q", lines[1], result.Dir, currentUser.HomeDir)
+	}
+	if lines[4] != session.shellPath {
+		t.Fatalf("SHELL = %q, want %q", lines[4], session.shellPath)
+	}
+
+	result, err = session.Execute(context.Background(), "cd ~ && pwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Output) != currentUser.HomeDir || result.Dir != currentUser.HomeDir {
+		t.Fatalf("cd ~ output/dir = %q/%q, want %q", result.Output, result.Dir, currentUser.HomeDir)
+	}
 }
 
 func TestExecuteRunsAnyCommandWithPipes(t *testing.T) {

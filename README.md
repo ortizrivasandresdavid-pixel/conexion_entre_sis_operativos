@@ -14,6 +14,7 @@ Proyecto académico multiplataforma: servidor en Debian/Linux y clientes para Wi
 - [Despliegue en producción](#despliegue-produccion)
   - [Red privada y autorización del cliente](#red-privada)
   - [Instalación automatizada con systemd](#instalacion-systemd)
+  - [Monitor CLI pasivo del servidor](#monitor-servidor)
   - [Verificación y operación](#verificacion-operacion)
 - [Uso del cliente](#uso-cliente)
   - [Consola](#cliente-consola)
@@ -41,8 +42,9 @@ El flujo técnico —despliegue systemd, logs estructurados, métricas, cliente 
                                    │
 ┌──────────────────────────── Debian/Linux ────────────────────────────┐
 │  servidor/ → src/sockets/ → autenticación, shell y métricas          │
-│                         ↘ logs estructurados                         │
-│  systemd ejecuta el servicio como el usuario sin privilegios         │
+│                         ↘ logs y eventos JSONL                       │
+│  systemd provisiona cuentas; cada shell baja al UID/GID autenticado  │
+│  src/servercli/ observa eventos y recursos sin controlar el servicio  │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,9 +52,10 @@ El flujo técnico —despliegue systemd, logs estructurados, métricas, cliente 
 ### Seguridad y límites operativos
 
 - La conexión TCP de la aplicación no cifra comandos, respuestas ni métricas. Para conectar equipos distintos, utiliza una VPN privada (por ejemplo, Tailscale o WireGuard); no publiques ni redirijas el puerto `2306` a Internet.
-- El servidor no aplica una lista blanca: un usuario autenticado puede ejecutar comandos con los permisos del proceso servidor. En producción, el servicio corre como el usuario dedicado `operativos`, no como `root`.
+- El servidor no aplica una lista blanca: un usuario autenticado puede ejecutar comandos con los permisos de su cuenta Linux. El daemon requiere root y capacidades acotadas para crear usuarios y cambiar credenciales; cada comando se ejecuta con el UID/GID autenticado, no como root. `NoNewPrivileges=true` impide que los shells ganen privilegios mediante ejecutables SUID.
 - La autenticación usa un desafío aleatorio y una prueba basada en SHA-256. La contraseña no se envía directamente; este mecanismo no sustituye TLS ni un algoritmo especializado de almacenamiento de contraseñas.
-- El registro desde la GUI permite crear cuentas nuevas y envía el hash SHA-256 de la contraseña por el canal TCP; en un canal sin cifrar ese hash equivale a la credencial. Restringe `AllowedClientIP` y usa una VPN privada. El registro no sustituye un alta administrativa controlada.
+- El monitor CLI del servidor lee un flujo JSONL local (`0644`); incluye comandos recibidos, usuarios e IP de cliente. No envíes secretos en los comandos ni expongas ese archivo a usuarios no confiables.
+- El registro desde la GUI permite crear cuentas de aplicación y cuentas Linux regulares con `/home/<usuario>`; la contraseña de aplicación no se asigna a la cuenta Linux. El nombre debe cumplir `^[a-z_][a-z0-9_-]{0,31}$`. El hash SHA-256 de la contraseña viaja por el canal TCP; en un canal sin cifrar equivale a la credencial. Restringe `AllowedClientIP` y usa una VPN privada.
 - Una sesión admite un comando a la vez; cada comando tiene un límite de cinco minutos y una salida máxima de 2 MiB. No hay TTY ni ejecución interactiva para programas como `vim`, `top` interactivo o `sudo` que soliciten contraseña.
 - El servidor admite hasta 32 conexiones concurrentes y limita los intentos fallidos por IP. El cliente no se reconecta automáticamente.
 
@@ -62,6 +65,7 @@ El flujo técnico —despliegue systemd, logs estructurados, métricas, cliente 
 | Componente | Requisito |
 |---|---|
 | Servidor | Debian/Linux, Go 1.27.3 o posterior, `bash` o `sh`; systemd para el despliegue de producción. |
+| Monitor CLI del servidor | Debian/Linux y Go 1.27.3 o posterior; no requiere Fyne, CGo ni entorno gráfico. |
 | Cliente de consola | Windows y Go 1.27.3 o posterior para compilar desde el código fuente. |
 | Cliente gráfico | Windows, Go, CGo habilitado y un compilador C compatible con Fyne (por ejemplo, GCC de MSYS2). |
 | Red entre equipos | VPN privada activa, IP del cliente autorizada en `AllowedClientIP` y TCP `2306` permitido solo por la red privada. |
@@ -112,6 +116,8 @@ printf %s 'ReemplazaEstaContraseña' | sha256sum
 
 Añade el usuario y el hash de 64 caracteres al archivo configurado en `UsersFile`. No reutilices credenciales de ejemplo.
 
+En desarrollo, el usuario indicado también debe existir en Linux y tener home `/home/<usuario>` (o ejecuta el servidor con privilegios para que pueda provisionarse). El instalador Debian prepara el servicio y las cuentas iniciales automáticamente.
+
 Arranca el servidor desde la raíz del proyecto:
 
 ```bash
@@ -140,7 +146,10 @@ El cliente requiere exactamente tres argumentos: IP del servidor, puerto y perí
 <summary>3. Ejecutar las pruebas automatizadas</summary>
 
 ```bash
+go build ./...
 go test ./cliente ./servidor ./src/logging ./src/login ./src/metrics ./src/shell ./src/sockets
+go test ./src/servercli
+(cd src/opergui && go build ./...)
 ```
 
 Las pruebas de `src/shell` necesitan `bash` o `sh` y se omiten en Windows o en entornos sin una shell POSIX.
@@ -150,7 +159,7 @@ Las pruebas de `src/shell` necesitan `bash` o `sh` y se omiten en Windows o en e
 <a id="despliegue-produccion"></a>
 ## Despliegue en producción
 
-El despliegue Debian utiliza `instalar-servidor.sh` y la unidad `deploy/servidor-operativos.service`. El instalador crea el usuario y grupo `operativos`, prepara los directorios, compila el servidor, instala configuración y usuarios bajo `/etc/`, registra el servicio y lo habilita e inicia.
+El despliegue Debian utiliza `instalar-servidor.sh` y la unidad `deploy/servidor-operativos.service`. El instalador prepara los directorios, compila el servidor, instala configuración y usuarios bajo `/etc/`, provisiona las cuentas iniciales como usuarios Linux regulares y habilita e inicia el servicio.
 
 <a id="red-privada"></a>
 ### Red privada y autorización del cliente
@@ -178,6 +187,7 @@ sudo systemctl restart servidor-operativos
 | `DefaultReportPeriodSeconds` | Período inicial de envío de métricas. |
 | `MaxReportPeriodSeconds` | Período máximo que el cliente puede solicitar (hasta 3600 segundos). |
 | `LogFile` | Archivo persistente; la ruta de producción predeterminada es `/var/log/proyecto-operativos/servidor.log`. |
+| `EventFile` | Flujo JSONL local para el monitor del servidor; por defecto, `eventos-gui.jsonl` junto a `LogFile`. |
 | `LogMaxSizeMB` / `LogBackups` | Tamaño antes de rotar y cantidad de archivos anteriores a conservar. |
 
 Las plantillas para desarrollo y producción están en `servidor/server.conf` y `deploy/configProyecto.conf`, respectivamente. Las rutas relativas de archivos de configuración se resuelven desde el directorio del propio `.conf`.
@@ -222,7 +232,7 @@ También se puede ejecutar con Bash:
 bash ./instalar-servidor.sh
 ```
 
-El usuario actual debe poder usar `sudo`. El script configura el usuario `operativos` sin shell de inicio de sesión, directorios `0750`, configuración con propietario `root:operativos` y modo `0640`, archivo de usuarios `root:operativos` con modo `0660` (el servicio necesita escribir las cuentas registradas), binario de servicio y unidad systemd. Al final imprime el estado del servicio. Su `trap` informa errores y la pausa interactiva espera Enter; desde el administrador de archivos, selecciona **Ejecutar en un terminal** para conservar la ventana abierta. Si `/etc/configProyecto.users` ya existe, el instalador conserva su contenido y solo corrige propietario y permisos.
+El usuario actual debe poder usar `sudo`. El script instala la configuración, legible por el monitor CLI (`root:root 0644`), el archivo de usuarios (`root:root 0600`), el binario y la unidad systemd. Crea cada usuario inicial que falte con `useradd -m -d /home/<usuario> -s /bin/bash`, verifica que sea una cuenta regular y asegura que su home pertenezca a ese usuario. Al final imprime el estado y siempre solicita Enter; desde el administrador de archivos, selecciona **Ejecutar en un terminal** para conservar la ventana abierta. Si `/etc/configProyecto.users` ya existe, conserva su contenido y corrige propietario y permisos.
 
 > Revisa `deploy/configProyecto.conf` antes de instalar: el valor de `AllowedClientIP` debe ser la IP VPN del cliente autorizado. Si editas el archivo de `/etc/` después de la instalación, reinicia systemd como se indica arriba.
 
@@ -243,9 +253,22 @@ printf %s 'ReemplazaEstaContraseña' | sha256sum
 
 Reemplaza cualquier credencial de ejemplo antes de utilizar el sistema fuera de una práctica local. Restringe el acceso a los archivos de credenciales; no almacenes contraseñas en texto claro.
 
-La GUI puede crear cuentas desde la pestaña **Registrarse** del Paso 2. El servidor valida que el usuario no exista, añade la línea `usuario:hash_sha256` al final del archivo y confirma el alta antes de iniciar la sesión. El archivo se instala como `root:operativos 0660` y la unidad declara `ReadWritePaths=/etc/configProyecto.users`, de modo que el usuario `operativos` puede escribir pese a `ProtectSystem=strict`. Si el archivo no tiene permiso de escritura, el registro falla con un error visible en la GUI y el login existente sigue funcionando.
+La GUI puede crear cuentas desde la pestaña **Registrarse** del Paso 2. El servidor valida el nombre y el hash, crea primero la cuenta Linux regular con shell `/bin/bash` y home `/home/<usuario>`, persiste `usuario:hash_sha256` y confirma el alta. Si falla la provisión, el registro se rechaza; el servidor no permite iniciar sesión con una cuenta cuyo UID sea menor que 1000 o cuyo home no sea `/home/<usuario>`. Las cuentas de Linux se crean sin contraseña de acceso del sistema: la autenticación pertenece a la aplicación. El archivo se instala como `root:root 0600`; el servicio necesita root para `useradd` y para cambiar las credenciales de los procesos hijos.
 
 </details>
+
+<a id="monitor-servidor"></a>
+### Monitor CLI pasivo del servidor
+
+El monitor es una aplicación de terminal en `src/servercli` y no depende de Fyne, CGo ni paquetes gráficos. Se ejecuta como proceso independiente del daemon: lee `/var/log/proyecto-operativos/eventos-gui.jsonl` y consulta `/proc`/el recolector local de recursos, pero no abre el puerto de clientes, controla systemd ni modifica las conexiones. Iniciarlo o salir de él no detiene ni reinicia el servidor.
+
+Desde la raíz del repositorio, ejecútalo en una terminal interactiva:
+
+```bash
+bash ./iniciar-cli-servidor.sh
+```
+
+El lanzador compila y ejecuta solo el monitor, conserva la terminal abierta al terminar o fallar y no necesita privilegios de root. Usa `c` + Enter para limpiar las listas visibles, `q` + Enter o `Ctrl+C` para salir. Si se configura `EventFile` en `/etc/configProyecto.conf`, el monitor utiliza esa ruta; también acepta `-config` o `-events`. El archivo conserva modo `0644` para permitir la lectura al usuario que ejecuta el monitor y contiene comandos, nombres de usuario e IP; no envíes secretos y protege el archivo frente a usuarios no confiables.
 
 <a id="verificacion-operacion"></a>
 ### Verificación y operación
@@ -260,25 +283,32 @@ systemctl is-enabled servidor-operativos
 systemctl is-active servidor-operativos
 systemctl status servidor-operativos --no-pager
 systemctl show servidor-operativos -p User -p Group -p ExecStart -p Restart
-pgrep -u operativos -af servidor-operativos
+ps -C servidor-operativos -o user,group,pid,args
 sudo ss -ltnp 'sport = :2306'
 ```
 
-El servicio debe estar `enabled` y `active`, correr como `operativos` y escuchar en el puerto configurado.
+El servicio debe estar `enabled` y `active`, ejecutarse como `root` con la unidad endurecida y escuchar en el puerto configurado. Tras iniciar sesión desde el cliente, comprueba `whoami`, `pwd` y `printf '%s\n' "$HOME"`: deben indicar el nombre autenticado y `/home/<usuario>`.
 
 Permisos de configuración y directorios:
 
 ```bash
 namei -l /etc/configProyecto.conf
 namei -l /etc/configProyecto.users
-sudo -u operativos test -r /etc/configProyecto.conf && echo "configuración legible"
-sudo -u operativos test -r /etc/configProyecto.users && echo "usuarios legible"
-sudo -u operativos test -w /etc/configProyecto.users && echo "usuarios escribible"
-sudo -u operativos test -w /var/lib/servidor-operativos && echo "estado escribible"
-sudo -u operativos test -w /var/log/proyecto-operativos && echo "logs escribible"
+sudo test -r /etc/configProyecto.conf && echo "configuración legible"
+sudo test -r /etc/configProyecto.users && echo "usuarios legible"
+sudo test -w /etc/configProyecto.users && echo "usuarios escribible"
+sudo test -w /var/lib/servidor-operativos && echo "estado escribible"
+sudo test -w /var/log/proyecto-operativos && echo "logs escribible"
 ```
 
 Logs estructurados: se escriben en journald y en `/var/log/proyecto-operativos/servidor.log`; la rotación se configura con `LogMaxSizeMB` y `LogBackups`. Se registran conexiones, autenticaciones y comandos (no sus salidas). Como sí se registra el texto del comando, no incluyas secretos en los comandos enviados.
+
+El flujo para el monitor se encuentra en `/var/log/proyecto-operativos/eventos-gui.jsonl` (o en la ruta configurada con `EventFile`). El CLI lo sigue en vivo y no altera el proceso servidor:
+
+```bash
+stat -c '%U:%G %a %n' /var/log/proyecto-operativos/eventos-gui.jsonl
+tail -n 20 /var/log/proyecto-operativos/eventos-gui.jsonl
+```
 
 ```bash
 journalctl -u servidor-operativos -b -n 50 --no-pager
@@ -286,7 +316,7 @@ sudo stat -c '%U:%G %a %n' /var/log/proyecto-operativos/servidor.log
 sudo tail -n 50 /var/log/proyecto-operativos/servidor.log
 ```
 
-La unidad aplica `ProtectSystem=strict`, `NoNewPrivileges=true`, `PrivateTmp=true` y elimina capacidades Linux. El usuario de servicio puede escribir en sus directorios de estado y logs, no de forma general en el sistema.
+La unidad aplica `ProtectSystem=full`, permite acceso a `/home`, protege `/usr` y `/boot` contra escritura, y restringe las capacidades a las necesarias para `useradd`, `chown`, el cambio de UID/GID y cancelar procesos hijos. Mantiene `NoNewPrivileges=true` para que una sesión no pueda elevar privilegios ejecutando binarios SUID.
 
 </details>
 

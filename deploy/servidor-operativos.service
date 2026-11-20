@@ -7,8 +7,8 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=operativos
-Group=operativos
+User=root
+Group=root
 WorkingDirectory=/var/lib/servidor-operativos
 ExecStart=/usr/local/bin/servidor-operativos -config /etc/configProyecto.conf
 Restart=on-failure
@@ -17,29 +17,25 @@ TimeoutStopSec=20s
 KillMode=mixed
 
 # systemd crea y da permisos a estos directorios antes de iniciar el proceso.
-# El log vive dentro de LogsDirectory para que la rotación funcione aunque
-# ProtectSystem=strict deje el resto de /var en solo lectura.
+# El log vive dentro de LogsDirectory para que la rotación funcione con systemd.
 StateDirectory=servidor-operativos
 StateDirectoryMode=0750
 LogsDirectory=proyecto-operativos
 LogsDirectoryMode=0750
 
-# El registro de cuentas desde la GUI agrega líneas al archivo de usuarios.
-# ProtectSystem=strict hace de solo lectura el resto de /etc, por lo que este
-# archivo se excluye explícitamente y se instala como root:operativos 0660.
-ReadWritePaths=/etc/configProyecto.users
-
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=servidor-operativos
 
-# Endurecimiento básico. El servidor ejecuta comandos remotos, por lo que se
-# limita a un usuario sin privilegios y sin capacidades.
+# El daemon necesita root para useradd y para cambiar UID/GID antes del exec de
+# cada shell. Los comandos heredan la identidad autenticada, no la del daemon.
+# ProtectSystem=full conserva /usr y /boot en solo lectura y deja que
+# useradd actualice /etc y sus archivos auxiliares de /var.
 UMask=0027
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
+ProtectSystem=full
+ProtectHome=false
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
@@ -49,7 +45,7 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 SystemCallArchitectures=native
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_KILL
 AmbientCapabilities=
 
 [Install]

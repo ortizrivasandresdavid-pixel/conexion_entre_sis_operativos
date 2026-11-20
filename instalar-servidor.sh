@@ -4,8 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 SERVICE_NAME="servidor-operativos"
-SERVICE_USER="operativos"
-SERVICE_GROUP="operativos"
 
 BIN_PATH="/usr/local/bin/servidor-operativos"
 CONF_DEST="/etc/configProyecto.conf"
@@ -16,15 +14,13 @@ LOG_DIR="/var/log/proyecto-operativos"
 
 pause_on_exit() {
     local exit_code=$?
-    if [[ -t 0 && -t 1 ]]; then
-        echo ""
-        if [[ $exit_code -ne 0 ]]; then
-            echo "[ERROR] La instalación falló con código de salida: $exit_code"
-        else
-            echo "[OK] Proceso finalizado."
-        fi
-        read -r -p "Presiona Enter para cerrar..." _ || true
+    echo ""
+    if [[ $exit_code -ne 0 ]]; then
+        echo "[ERROR] La instalación falló con código de salida: $exit_code"
+    else
+        echo "[OK] Proceso finalizado."
     fi
+    read -r -p "Presiona Enter para cerrar..." _ || true
 }
 trap pause_on_exit EXIT
 
@@ -34,6 +30,48 @@ run_root() {
     else
         sudo "$@"
     fi
+}
+
+ensure_initial_users() {
+    run_root cat "$USERS_DEST" | while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" =~ ^[[:space:]]*$ || "$line" =~ ^[[:space:]]*# ]] && continue
+        if [[ "$line" != *:* ]]; then
+            echo "Error: línea inválida en $USERS_DEST: falta ':'." >&2
+            exit 1
+        fi
+
+        username="${line%%:*}"
+        if [[ ! "$username" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+            echo "Error: nombre de usuario Linux no válido en $USERS_DEST: $username" >&2
+            exit 1
+        fi
+
+        if ! account="$(getent passwd "$username")"; then
+            run_root useradd -m -d "/home/$username" -s /bin/bash -- "$username"
+            account="$(getent passwd "$username")" || {
+                echo "Error: useradd no creó la cuenta $username." >&2
+                exit 1
+            }
+        fi
+
+        IFS=: read -r _ _ uid _ _ home _ <<< "$account"
+        if [[ ! "$uid" =~ ^[0-9]+$ ]] || (( uid < 1000 )); then
+            echo "Error: $username no es una cuenta regular (se requiere UID >= 1000)." >&2
+            exit 1
+        fi
+        expected_home="/home/$username"
+        if [[ "$home" != "$expected_home" ]]; then
+            echo "Error: el home de $username es $home; se esperaba $expected_home." >&2
+            exit 1
+        fi
+        if [[ -L "$expected_home" || ( -e "$expected_home" && ! -d "$expected_home" ) ]]; then
+            echo "Error: $expected_home no es un directorio seguro." >&2
+            exit 1
+        fi
+        primary_group="$(id -gn "$username")"
+        run_root install -d -m 0750 -o "$username" -g "$primary_group" "$expected_home"
+        echo "      Cuenta Linux lista: $username ($expected_home)"
+    done
 }
 
 echo "=== Instalador de ${SERVICE_NAME} ==="
@@ -80,19 +118,10 @@ if [[ -z "$GO_BIN" ]]; then
     exit 1
 fi
 
-# 3. Crear grupo y usuario de sistema sin acceso interactivo
-echo "[3/7] Configurando usuario y directorios del sistema..."
-if ! getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
-    run_root groupadd --system "$SERVICE_GROUP"
-fi
-if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
-    run_root useradd --system --gid "$SERVICE_GROUP" \
-        --home-dir "$STATE_DIR" --no-create-home \
-        --shell /usr/sbin/nologin "$SERVICE_USER"
-fi
-
+# 3. Preparar directorios de estado y logs
+echo "[3/7] Preparando directorios del sistema..."
 run_root mkdir -p "$STATE_DIR" "$LOG_DIR"
-run_root chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$STATE_DIR" "$LOG_DIR"
+run_root chown -R root:root "$STATE_DIR" "$LOG_DIR"
 run_root chmod 0750 "$STATE_DIR" "$LOG_DIR"
 
 # 4. Compilar el binario de producción e instalarlo en /usr/local/bin
@@ -112,31 +141,30 @@ USERS_SRC="$ROOT_DIR/deploy/configProyecto.users"
 [[ ! -f "$USERS_SRC" ]] && USERS_SRC="$ROOT_DIR/servidor/users.conf"
 
 if [[ ! -f "$CONF_DEST" ]]; then
-    run_root install -o root -g "$SERVICE_GROUP" -m 0640 "$CONF_SRC" "$CONF_DEST"
+    run_root install -o root -g root -m 0644 "$CONF_SRC" "$CONF_DEST"
     # Asegurar que UsersFile y LogFile apunten a las rutas del sistema
     run_root sed -i "s|^UsersFile=.*|UsersFile=${USERS_DEST}|" "$CONF_DEST"
     run_root sed -i "s|^LogFile=.*|LogFile=${LOG_DIR}/servidor.log|" "$CONF_DEST"
 else
+    run_root chown root:root "$CONF_DEST"
+    run_root chmod 0644 "$CONF_DEST"
     echo "      ${CONF_DEST} ya existe; se conserva la configuración actual."
 fi
 
 if [[ ! -f "$USERS_DEST" ]]; then
-    run_root install -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0640 "$USERS_SRC" "$USERS_DEST"
+    run_root install -o root -g root -m 0600 "$USERS_SRC" "$USERS_DEST"
 else
-    run_root chown "${SERVICE_USER}:${SERVICE_GROUP}" "$USERS_DEST"
-    run_root chmod 0640 "$USERS_DEST"
+    run_root chown root:root "$USERS_DEST"
+    run_root chmod 0600 "$USERS_DEST"
     echo "      ${USERS_DEST} ya existe; se conservan los usuarios registrados."
 fi
 
-# 6. Instalar unidad systemd (permitiendo escritura controlada en /etc/configProyecto.users)
+# 6. Provisionar cuentas iniciales e instalar la unidad systemd
 echo "[6/7] Configurando servicio systemd..."
+ensure_initial_users
 UNIT_SRC="$ROOT_DIR/deploy/${SERVICE_NAME}.service"
 if [[ -f "$UNIT_SRC" ]]; then
     run_root install -o root -g root -m 0644 "$UNIT_SRC" "$UNIT_DEST"
-    # Garantizar que ProtectSystem=strict permita registrar nuevos usuarios en USERS_DEST
-    if run_root grep -q "^ProtectSystem=strict" "$UNIT_DEST" && ! run_root grep -q "^ReadWritePaths=" "$UNIT_DEST"; then
-        run_root sed -i "/^ProtectSystem=strict/a ReadWritePaths=${USERS_DEST}" "$UNIT_DEST"
-    fi
 else
     echo "Error: No se encontró la plantilla ${UNIT_SRC}." >&2
     exit 1

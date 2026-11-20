@@ -30,7 +30,7 @@ func TestClientSessionAuthenticatesSetsPeriodAndSendsCommand(t *testing.T) {
 		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 
 		reader := newMessageReader(conn)
-		if err := authenticateServer(
+		if _, err := authenticateServer(
 			context.Background(),
 			conn,
 			reader,

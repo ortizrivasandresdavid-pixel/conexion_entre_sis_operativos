@@ -17,7 +17,7 @@ func fakeSessionServer(t *testing.T, conn net.Conn, store *login.UserStore, limi
 	defer conn.Close()
 
 	reader := newMessageReader(conn)
-	if err := authenticateServer(
+	if _, err := authenticateServer(
 		context.Background(), conn, reader, store, 3, limiter, "127.0.0.1",
 	); err != nil {
 		return

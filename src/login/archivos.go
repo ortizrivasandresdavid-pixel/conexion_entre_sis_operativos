@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
-	"unicode"
 )
+
+var usernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
 var (
 	// ErrUserExists indica que el nombre de usuario ya está registrado.
@@ -25,19 +27,31 @@ var (
 // conexiones del servidor, por lo que el mutex protege tanto el mapa como el
 // archivo de usuarios.
 type UserStore struct {
-	mu    sync.RWMutex
-	path  string
-	users map[string]string
+	mu                    sync.RWMutex
+	path                  string
+	users                 map[string]string
+	systemUserProvisioner func(string) error
 }
 
 // OpenUserStore carga el archivo de usuarios y devuelve un store listo para
-// verificar credenciales y registrar cuentas nuevas.
+// verificar credenciales, registrar cuentas nuevas y provisionar sus cuentas
+// de sistema Linux.
 func OpenUserStore(path string) (*UserStore, error) {
+	return OpenUserStoreWithProvisioner(path, EnsureSystemUser)
+}
+
+// OpenUserStoreWithProvisioner permite inyectar la provisión de cuenta del
+// sistema. El servidor usa OpenUserStore; esta variante sirve para pruebas y
+// herramientas que no deben modificar las cuentas del equipo.
+func OpenUserStoreWithProvisioner(path string, provisioner func(string) error) (*UserStore, error) {
+	if provisioner == nil {
+		return nil, errors.New("el provisionador de usuarios del sistema no puede ser nil")
+	}
 	users, err := LoadUsers(path)
 	if err != nil {
 		return nil, err
 	}
-	return &UserStore{path: path, users: users}, nil
+	return &UserStore{path: path, users: users, systemUserProvisioner: provisioner}, nil
 }
 
 func (s *UserStore) Path() string {
@@ -56,12 +70,10 @@ func (s *UserStore) Verify(username, nonce, proof string) bool {
 	return VerifyProofHash(storedHash, username, nonce, proof)
 }
 
-// Register valida y persiste una cuenta nueva. El usuario y el hash se
-// comprueban antes de escribir, y la comprobación de duplicados junto con la
-// escritura se realizan bajo el mismo mutex para evitar carreras entre
-// conexiones concurrentes.
+// Register valida los datos, provisiona la cuenta Linux y persiste la cuenta
+// de aplicación. La comprobación de duplicados y estas operaciones se
+// serializan para evitar registros concurrentes del mismo nombre.
 func (s *UserStore) Register(username, passwordHash string) error {
-	username = strings.TrimSpace(username)
 	if err := ValidateUsername(username); err != nil {
 		return err
 	}
@@ -75,6 +87,9 @@ func (s *UserStore) Register(username, passwordHash string) error {
 	if _, exists := s.users[username]; exists {
 		return ErrUserExists
 	}
+	if err := s.systemUserProvisioner(username); err != nil {
+		return fmt.Errorf("crear la cuenta Linux para %q: %w", username, err)
+	}
 	if err := appendUser(s.path, username, hash); err != nil {
 		return err
 	}
@@ -85,16 +100,20 @@ func (s *UserStore) Register(username, passwordHash string) error {
 // ValidateUsername rechaza nombres que romperían el formato usuario:hash o que
 // no podrían distinguirse de un comentario.
 func ValidateUsername(username string) error {
-	if username == "" || username != strings.TrimSpace(username) {
-		return fmt.Errorf("%w: no puede estar vacío ni empezar o terminar con espacios", ErrInvalidUsername)
+	if !usernamePattern.MatchString(username) {
+		return fmt.Errorf("%w: use de 1 a 32 caracteres, comenzando con una letra minúscula o '_' y continuando con minúsculas, dígitos, '_' o '-'", ErrInvalidUsername)
 	}
-	if len(username) > 64 {
-		return fmt.Errorf("%w: como máximo 64 caracteres", ErrInvalidUsername)
+	return nil
+}
+
+// EnsureSystemUser asegura que el usuario registrado existe en el sistema
+// operativo antes de abrir una sesión de shell.
+func (s *UserStore) EnsureSystemUser(username string) error {
+	if err := ValidateUsername(username); err != nil {
+		return err
 	}
-	for _, char := range username {
-		if char == ':' || char == '#' || unicode.IsSpace(char) || unicode.IsControl(char) {
-			return fmt.Errorf("%w: no puede contener ':', '#', espacios ni caracteres de control", ErrInvalidUsername)
-		}
+	if err := s.systemUserProvisioner(username); err != nil {
+		return fmt.Errorf("asegurar la cuenta Linux para %q: %w", username, err)
 	}
 	return nil
 }
@@ -112,9 +131,8 @@ func NormalizePasswordHash(passwordHash string) (string, error) {
 	return hash, nil
 }
 
-// appendUser agrega una línea al archivo sin reemplazarlo, de modo que las
-// cuentas registradas sobrevivan a reinicios y a ProtectSystem=strict (que hace
-// de solo lectura el resto de /etc).
+// appendUser agrega una línea al archivo sin reemplazarlo para conservar las
+// cuentas registradas en reinicios.
 func appendUser(path, username, passwordHash string) error {
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0o640)
 	if err != nil {
@@ -162,8 +180,7 @@ func LoadUsers(path string) (map[string]string, error) {
 		}
 
 		username, passwordHash, ok := strings.Cut(line, ":")
-		if !ok || strings.TrimSpace(username) != username ||
-			username == "" || len(passwordHash) != 64 {
+		if !ok || ValidateUsername(username) != nil || len(passwordHash) != 64 {
 			return nil, fmt.Errorf("formato inválido en %s:%d", path, lineNumber)
 		}
 		if _, err := hex.DecodeString(passwordHash); err != nil {

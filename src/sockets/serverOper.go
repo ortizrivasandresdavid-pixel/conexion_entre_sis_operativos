@@ -39,6 +39,9 @@ type ServerConfig struct {
 	LogFile                    string
 	LogMaxSizeMB               int
 	LogBackups                 int
+	// EventFile es el JSONL local del monitor gráfico. No es un socket de
+	// clientes: si no se puede escribir, el servidor sigue escuchando.
+	EventFile string
 }
 
 func RunServer(ctx context.Context, config ServerConfig) error {
@@ -47,7 +50,7 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 	}
 	// Falla al arrancar (y no en la primera conexión) si el servidor no tiene
 	// bash/sh disponible para ejecutar los comandos remotos.
-	if _, err := shell.NewSession(); err != nil {
+	if err := shell.CheckAvailable(); err != nil {
 		return fmt.Errorf("shell remoto no disponible: %w", err)
 	}
 	accounts, err := login.OpenUserStore(config.UsersFile)
@@ -59,6 +62,18 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 	listener, err := net.Listen("tcp", net.JoinHostPort(config.ListenIP, strconv.Itoa(config.Port)))
 	if err != nil {
 		return fmt.Errorf("abrir socket servidor: %w", err)
+	}
+	// El monitor gráfico solo lee este archivo. Abrirlo o cerrarlo no toca
+	// el puerto ni las sesiones. Si el archivo no se puede crear, se sigue.
+	events, eventErr := openGUIEventLog(config.EventFile)
+	if eventErr != nil {
+		slog.Warn("monitor gráfico sin flujo de eventos; las sesiones siguen activas",
+			"archivo", config.EventFile,
+			"error", eventErr,
+		)
+	} else {
+		defer events.Close()
+		slog.Info("flujo de eventos para la GUI", "archivo", config.EventFile)
 	}
 	var handlers sync.WaitGroup
 	var activeConnections sync.Map
@@ -106,7 +121,7 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 				defer handlers.Done()
 				defer func() { <-slots }()
 				defer activeConnections.Delete(conn)
-				if err := serveConnection(ctx, conn, config, accounts, attemptLimiter); err != nil {
+				if err := serveConnection(ctx, conn, config, accounts, attemptLimiter, events); err != nil {
 					slog.Warn("conexión finalizada con error",
 						"remota", conn.RemoteAddr().String(),
 						"error", err,
@@ -152,6 +167,7 @@ func serveConnection(
 	config ServerConfig,
 	accounts *login.UserStore,
 	attemptLimiter *login.AttemptLimiter,
+	events *guiEventLog,
 ) error {
 	defer conn.Close()
 	allowed, err := parseAllowedIP(config.AllowedClientIP)
@@ -166,25 +182,36 @@ func serveConnection(
 		slog.Warn("conexión rechazada: IP no autorizada", "ip", remoteIP.String())
 		return fmt.Errorf("IP no autorizada: %s", remoteIP)
 	}
-	slog.Info("conexión entrante", "ip", remoteIP.String())
-	defer slog.Info("conexión cerrada", "ip", remoteIP.String())
+	clientIP := remoteIP.String()
+	slog.Info("conexión entrante", "ip", clientIP)
+	defer slog.Info("conexión cerrada", "ip", clientIP)
+
+	events.session("connect", clientIP, "", false)
+	var username string
+	authenticated := false
+	defer func() {
+		events.session("disconnect", clientIP, username, authenticated)
+	}()
 
 	reader := newMessageReader(conn)
 	if err := conn.SetDeadline(time.Now().Add(serverAuthTimeout)); err != nil {
 		return fmt.Errorf("configurar tiempo límite de autenticación: %w", err)
 	}
-	if err := authenticateServer(ctx, conn, reader, accounts, config.MaxAuthAttempts, attemptLimiter, remoteIP.String()); err != nil {
+	username, err = authenticateServer(ctx, conn, reader, accounts, config.MaxAuthAttempts, attemptLimiter, clientIP)
+	if err != nil {
 		return err
 	}
+	authenticated = true
+	events.session("login", clientIP, username, true)
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		return fmt.Errorf("limpiar tiempo límite de conexión: %w", err)
 	}
-	terminal, err := shell.NewSession()
+	terminal, err := shell.NewSession(username)
 	if err != nil {
 		return fmt.Errorf("preparar shell remoto: %w", err)
 	}
-	slog.Info("sesión de shell iniciada", "ip", remoteIP.String(), "directorio", terminal.Dir())
-	return runSession(ctx, conn, reader, config, terminal, remoteIP.String())
+	slog.Info("sesión de shell iniciada", "ip", clientIP, "usuario", username, "directorio", terminal.Dir())
+	return runSession(ctx, conn, reader, config, terminal, clientIP, username, events)
 }
 
 func authenticateServer(
@@ -195,7 +222,7 @@ func authenticateServer(
 	maxAttempts int,
 	attemptLimiter *login.AttemptLimiter,
 	clientIP string,
-) error {
+) (string, error) {
 	for {
 		remaining, retryAfter := attemptLimiter.Check(clientIP, maxAttempts)
 		if retryAfter > 0 {
@@ -217,39 +244,39 @@ func authenticateServer(
 				AttemptsRemaining: remaining,
 				RetryAfterSeconds: durationSeconds(retryAfter),
 			}); err != nil {
-				return err
+				return "", err
 			}
 			if remaining == 0 {
 				if err := conn.Close(); err != nil {
-					return fmt.Errorf("cerrar conexión bloqueada: %w", err)
+					return "", fmt.Errorf("cerrar conexión bloqueada: %w", err)
 				}
 			}
-			return fmt.Errorf("autenticación bloqueada temporalmente para %s", clientIP)
+			return "", fmt.Errorf("autenticación bloqueada temporalmente para %s", clientIP)
 		}
 		if err := conn.SetDeadline(time.Now().Add(serverAuthTimeout)); err != nil {
-			return fmt.Errorf("configurar tiempo límite de autenticación: %w", err)
+			return "", fmt.Errorf("configurar tiempo límite de autenticación: %w", err)
 		}
 
 		nonceBytes := make([]byte, 32)
 		if _, err := rand.Read(nonceBytes); err != nil {
-			return fmt.Errorf("generar desafío de autenticación: %w", err)
+			return "", fmt.Errorf("generar desafío de autenticación: %w", err)
 		}
 		nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 		if err := writeMessage(conn, Message{Type: "auth_challenge", Nonce: nonce}); err != nil {
-			return err
+			return "", err
 		}
 
 		request, err := reader.Read()
 		if err != nil {
-			return err
+			return "", err
 		}
 		if request.Type == "register" {
 			registered, err := handleRegistration(conn, accounts, request, nonce, clientIP, attemptLimiter)
 			if err != nil {
-				return err
+				return "", err
 			}
 			if registered {
-				return nil
+				return request.Username, nil
 			}
 			// Registro rechazado: se envía un desafío nuevo y se permite
 			// corregir el nombre de usuario sin reabrir el socket.
@@ -260,7 +287,7 @@ func authenticateServer(
 				"ip", clientIP,
 				"tipo", request.Type,
 			)
-			return fmt.Errorf("solicitud de autenticación inválida")
+			return "", fmt.Errorf("solicitud de autenticación inválida")
 		}
 
 		remaining, retryAfter = attemptLimiter.Check(clientIP, maxAttempts)
@@ -284,33 +311,47 @@ func authenticateServer(
 				AttemptsRemaining: remaining,
 				RetryAfterSeconds: durationSeconds(retryAfter),
 			}); err != nil {
-				return err
+				return "", err
 			}
 			if remaining == 0 {
 				if err := conn.Close(); err != nil {
-					return fmt.Errorf("cerrar conexión bloqueada: %w", err)
+					return "", fmt.Errorf("cerrar conexión bloqueada: %w", err)
 				}
-				return fmt.Errorf("se agotaron los intentos de autenticación para %s", clientIP)
+				return "", fmt.Errorf("se agotaron los intentos de autenticación para %s", clientIP)
 			}
 			if err := waitForAuthRetry(ctx, retryAfter); err != nil {
-				return err
+				return "", err
 			}
 			continue
 		}
 
 		ok := accounts.Verify(request.Username, nonce, request.Proof)
 		if ok {
+			if err := accounts.EnsureSystemUser(request.Username); err != nil {
+				slog.Error("no se pudo asegurar la cuenta Linux", "ip", clientIP, "usuario", request.Username, "error", err)
+				if sendErr := sendAuthResult(conn, Message{
+					Code:              "SYSTEM_USER_FAILED",
+					Error:             fmt.Sprintf("no se pudo preparar la cuenta del sistema: %v", err),
+					AttemptsRemaining: maxAttempts,
+				}); sendErr != nil {
+					return "", sendErr
+				}
+				return "", err
+			}
 			attemptLimiter.RecordSuccess(clientIP)
 			slog.Info("autenticación correcta",
 				"ip", clientIP,
 				"usuario", request.Username,
 			)
-			return sendAuthResult(conn, Message{OK: true, AttemptsRemaining: maxAttempts})
+			if err := sendAuthResult(conn, Message{OK: true, AttemptsRemaining: maxAttempts}); err != nil {
+				return "", err
+			}
+			return request.Username, nil
 		}
 
 		remaining, retryAfter = attemptLimiter.RecordFailure(clientIP, maxAttempts)
 		if err := conn.SetDeadline(time.Now().Add(retryAfter + serverAuthResultGrace)); err != nil {
-			return fmt.Errorf("configurar espera de autenticación: %w", err)
+			return "", fmt.Errorf("configurar espera de autenticación: %w", err)
 		}
 		code := "AUTH_BACKOFF"
 		message := fmt.Sprintf("credenciales incorrectas; intente de nuevo en %d segundos", durationSeconds(retryAfter))
@@ -331,17 +372,17 @@ func authenticateServer(
 			AttemptsRemaining: remaining,
 			RetryAfterSeconds: durationSeconds(retryAfter),
 		}); err != nil {
-			return err
+			return "", err
 		}
 		if remaining == 0 {
 			if err := conn.Close(); err != nil {
-				return fmt.Errorf("cerrar conexión bloqueada: %w", err)
+				return "", fmt.Errorf("cerrar conexión bloqueada: %w", err)
 			}
-			return fmt.Errorf("se agotaron los intentos de autenticación para %s", clientIP)
+			return "", fmt.Errorf("se agotaron los intentos de autenticación para %s", clientIP)
 		}
 
 		if err := waitForAuthRetry(ctx, retryAfter); err != nil {
-			return err
+			return "", err
 		}
 	}
 }
@@ -357,7 +398,7 @@ func handleRegistration(
 	clientIP string,
 	attemptLimiter *login.AttemptLimiter,
 ) (bool, error) {
-	username := strings.TrimSpace(request.Username)
+	username := request.Username
 	if err := login.ValidateUsername(username); err != nil {
 		return false, sendRegistrationError(conn, "INVALID_USERNAME", username, err, clientIP)
 	}
@@ -442,6 +483,8 @@ func runSession(
 	config ServerConfig,
 	terminal *shell.Session,
 	clientIP string,
+	username string,
+	events *guiEventLog,
 ) error {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -501,6 +544,7 @@ func runSession(
 				}
 			case "command":
 				command := strings.TrimSpace(event.message.Command)
+				events.commandReceived(clientIP, username, event.message.ID, command)
 				if commandRunning {
 					if err := writeMessage(conn, Message{Type: "command_result", ID: event.message.ID, Error: "espera a que termine el comando actual"}); err != nil {
 						return err
@@ -575,14 +619,18 @@ func runSession(
 		case <-ticker.C:
 			snapshot, err := collector.Snapshot()
 			if err != nil {
-				if writeErr := writeMessage(conn, Message{Type: "metric", Error: err.Error()}); writeErr != nil {
+				writeErr := writeMessage(conn, Message{Type: "metric", Error: err.Error()})
+				events.reportSent(clientIP, username, "error", err)
+				if writeErr != nil {
 					return writeErr
 				}
 				continue
 			}
 			if err := writeMessage(conn, Message{Type: "metric", Metrics: &snapshot}); err != nil {
+				events.reportSent(clientIP, username, "error", err)
 				return err
 			}
+			events.reportSent(clientIP, username, "enviado", nil)
 		}
 	}
 }

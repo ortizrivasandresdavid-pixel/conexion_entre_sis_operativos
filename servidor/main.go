@@ -22,8 +22,8 @@ const (
 	// Ruta usada por el servicio systemd. Se puede cambiar con -config.
 	defaultConfigPath = "/etc/configProyecto.conf"
 	// Los logs se guardan en un directorio para que la rotación funcione con
-	// ProtectSystem=strict y LogsDirectory= de systemd.
-	defaultLogPath      = "/var/log/proyecto-operativos/servidor.log"
+	// ProtectSystem y LogsDirectory= de systemd.
+	defaultLogPath      = sockets.DefaultServerLogFile
 	defaultLogMaxSizeMB = 10
 	defaultLogBackups   = 5
 )
@@ -195,6 +195,7 @@ func loadConfig(path string) (sockets.ServerConfig, error) {
 		"LogFile":      true,
 		"LogMaxSizeMB": true,
 		"LogBackups":   true,
+		"EventFile":    true,
 	}
 	for _, key := range required {
 		if values[key] == "" {
@@ -275,6 +276,7 @@ func loadConfig(path string) (sockets.ServerConfig, error) {
 	if !isAbsolutePath(logFile) {
 		logFile = filepath.Join(filepath.Dir(path), logFile)
 	}
+	eventFile := sockets.ResolveGUIEventFile(logFile, values["EventFile"], filepath.Dir(path))
 
 	return sockets.ServerConfig{
 		ListenIP:                   values["ListenIP"],
@@ -287,5 +289,6 @@ func loadConfig(path string) (sockets.ServerConfig, error) {
 		LogFile:                    logFile,
 		LogMaxSizeMB:               logMaxSizeMB,
 		LogBackups:                 logBackups,
+		EventFile:                  eventFile,
 	}, nil
 }

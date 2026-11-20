@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,26 +47,70 @@ type Session struct {
 	mu        sync.Mutex
 	dir       string
 	shellPath string
+	username  string
+	uid       uint32
+	gid       uint32
+	groups    []uint32
 	// Timeout es el tiempo máximo por comando. Si es cero se usa
 	// DefaultTimeout.
 	Timeout time.Duration
 }
 
-// NewSession crea una sesión de shell que empieza en el directorio de trabajo
-// actual del proceso servidor.
-func NewSession() (*Session, error) {
+// NewSession crea una sesión de shell ejecutada con la identidad del usuario
+// Linux indicado y comienza en su directorio personal.
+func NewSession(username string) (*Session, error) {
 	if runtime.GOOS == "windows" {
 		return nil, errors.New("la ejecución remota de comandos requiere Linux o macOS (bash/sh con descriptores extra)")
+	}
+	systemUser, err := user.Lookup(username)
+	if err != nil {
+		return nil, fmt.Errorf("buscar usuario del sistema %q: %w", username, err)
+	}
+	uid, err := strconv.ParseUint(systemUser.Uid, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("UID no válido para %q: %w", username, err)
+	}
+	gid, err := strconv.ParseUint(systemUser.Gid, 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("GID no válido para %q: %w", username, err)
+	}
+	groupIDs, err := systemUser.GroupIds()
+	if err != nil {
+		return nil, fmt.Errorf("obtener grupos de %q: %w", username, err)
+	}
+	groups := make([]uint32, 0, len(groupIDs))
+	for _, groupID := range groupIDs {
+		value, err := strconv.ParseUint(groupID, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("GID suplementario no válido para %q: %w", username, err)
+		}
+		groups = append(groups, uint32(value))
 	}
 	shellPath, err := findShell()
 	if err != nil {
 		return nil, err
 	}
-	dir, err := os.Getwd()
-	if err != nil {
-		dir = string(os.PathSeparator)
+	if systemUser.HomeDir == "" {
+		return nil, fmt.Errorf("el usuario %q no tiene un directorio personal configurado", username)
 	}
-	return &Session{dir: dir, shellPath: shellPath, Timeout: DefaultTimeout}, nil
+	return &Session{
+		dir:       systemUser.HomeDir,
+		shellPath: shellPath,
+		username:  systemUser.Username,
+		uid:       uint32(uid),
+		gid:       uint32(gid),
+		groups:    groups,
+		Timeout:   DefaultTimeout,
+	}, nil
+}
+
+// CheckAvailable comprueba al arrancar que haya una shell POSIX ejecutable.
+func CheckAvailable() error {
+	if runtime.GOOS == "windows" {
+		return errors.New("la ejecución remota de comandos requiere Linux o macOS (bash/sh con descriptores extra)")
+	}
+	_, err := findShell()
+	return err
 }
 
 // Dir devuelve el directorio de trabajo actual de la sesión.
@@ -123,11 +169,15 @@ exit $__dsh_status`
 	cmd := exec.CommandContext(commandCtx, s.shellPath, "-c", script)
 	cmd.Dir = s.dir
 	cmd.Env = withEnv(os.Environ(), "DSH_CMD", command)
+	cmd.Env = withEnv(cmd.Env, "HOME", s.dir)
+	cmd.Env = withEnv(cmd.Env, "USER", s.username)
+	cmd.Env = withEnv(cmd.Env, "LOGNAME", s.username)
+	cmd.Env = withEnv(cmd.Env, "SHELL", s.shellPath)
 	cmd.Stdout = outputWriter
 	cmd.Stderr = outputWriter
 	cmd.ExtraFiles = []*os.File{dirWriter}
 	cmd.WaitDelay = 2 * time.Second
-	configureProcess(cmd)
+	configureProcess(cmd, s.uid, s.gid, s.groups)
 	cmd.Cancel = func() error { return killProcessTree(cmd) }
 	if err := cmd.Start(); err != nil {
 		_ = outputWriter.Close()
@@ -229,13 +279,17 @@ exit $__dsh_status`
 	return result, runErr
 }
 
-// Execute conserva la antigua API de conveniencia: ejecuta command en una
-// sesión compartida que conserva el directorio de trabajo. La consola local de
-// src/shell.go la usa; los clientes remotos usan una Session por conexión.
+// Execute ejecuta command en una sesión local compartida bajo la identidad del
+// usuario actual y conserva el directorio entre comandos.
 func Execute(ctx context.Context, command string) (string, error) {
 	defaultMu.Lock()
 	if defaultSession == nil {
-		session, err := NewSession()
+		currentUser, err := user.Current()
+		if err != nil {
+			defaultMu.Unlock()
+			return "", fmt.Errorf("buscar usuario actual: %w", err)
+		}
+		session, err := NewSession(currentUser.Username)
 		if err != nil {
 			defaultMu.Unlock()
 			return "", err
