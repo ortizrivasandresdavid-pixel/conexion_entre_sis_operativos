@@ -146,9 +146,10 @@ if [[ ! -f "$CONF_DEST" ]]; then
     run_root sed -i "s|^UsersFile=.*|UsersFile=${USERS_DEST}|" "$CONF_DEST"
     run_root sed -i "s|^LogFile=.*|LogFile=${LOG_DIR}/servidor.log|" "$CONF_DEST"
 else
-    run_root chown root:root "$CONF_DEST"
-    run_root chmod 0644 "$CONF_DEST"
-    echo "      ${CONF_DEST} ya existe; se conserva la configuración actual."
+    run_root install -o root -g root -m 0644 "$CONF_SRC" "$CONF_DEST"
+    run_root sed -i "s|^UsersFile=.*|UsersFile=${USERS_DEST}|" "$CONF_DEST"
+    run_root sed -i "s|^LogFile=.*|LogFile=${LOG_DIR}/servidor.log|" "$CONF_DEST"
+    echo "      Configuración actualizada en ${CONF_DEST}."
 fi
 
 if [[ ! -f "$USERS_DEST" ]]; then
