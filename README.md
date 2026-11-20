@@ -9,8 +9,9 @@ Proyecto académico multiplataforma: servidor en Debian/Linux y clientes para Wi
 - [Resumen del proyecto y arquitectura rápida](#resumen-arquitectura)
   - [Arquitectura](#arquitectura)
   - [Seguridad y límites operativos](#seguridad-limites)
+- [Guía rápida: instalar y usar los ejecutables](#guia-rapida-ejecutables)
 - [Requisitos del sistema](#requisitos)
-- [Guía de inicio rápido (desarrollo local)](#inicio-rapido)
+- [Compilar y probar desde el código fuente](#inicio-rapido)
 - [Despliegue en producción](#despliegue-produccion)
   - [Red privada y autorización del cliente](#red-privada)
   - [Instalación automatizada con systemd](#instalacion-systemd)
@@ -26,7 +27,7 @@ Proyecto académico multiplataforma: servidor en Debian/Linux y clientes para Wi
 
 El servidor escucha en TCP, autoriza la IP/CIDR del cliente, autentica usuarios con un archivo plano de hashes SHA-256, permite registrar cuentas nuevas desde la GUI y administra una sesión de comandos. Durante la sesión reporta CPU, memoria, procesos y espacio usado en la partición raíz (`/`). Los mensajes de aplicación son JSON delimitado por líneas.
 
-El flujo técnico —despliegue systemd, logs estructurados, métricas, cliente de consola y GUI Fyne— está implementado, probado y verificado en un entorno real con Debian y Windows.
+El repositorio incluye despliegue con systemd, logs estructurados, métricas, cliente de consola y GUI Fyne; los pasos de instalación y verificación se describen a continuación.
 
 <a id="arquitectura"></a>
 ### Arquitectura
@@ -43,7 +44,7 @@ El flujo técnico —despliegue systemd, logs estructurados, métricas, cliente 
 ┌──────────────────────────── Debian/Linux ────────────────────────────┐
 │  servidor/ → src/sockets/ → autenticación, shell y métricas          │
 │                         ↘ logs y eventos JSONL                       │
-│  systemd provisiona cuentas; cada shell baja al UID/GID autenticado  │
+│  instalador prepara cuentas iniciales; shells usan UID/GID autenticado│
 │  src/servercli/ observa eventos y recursos sin controlar el servicio  │
 └───────────────────────────────────────────────────────────────────────┘
 ```
@@ -55,9 +56,121 @@ El flujo técnico —despliegue systemd, logs estructurados, métricas, cliente 
 - El servidor no aplica una lista blanca: un usuario autenticado puede ejecutar comandos con los permisos de su cuenta Linux. El daemon requiere root y capacidades acotadas para crear usuarios y cambiar credenciales; cada comando se ejecuta con el UID/GID autenticado, no como root. `NoNewPrivileges=true` impide que los shells ganen privilegios mediante ejecutables SUID.
 - La autenticación usa un desafío aleatorio y una prueba basada en SHA-256. La contraseña no se envía directamente; este mecanismo no sustituye TLS ni un algoritmo especializado de almacenamiento de contraseñas.
 - El monitor CLI del servidor lee un flujo JSONL local (`0644`); incluye comandos recibidos, usuarios e IP de cliente. No envíes secretos en los comandos ni expongas ese archivo a usuarios no confiables.
-- El registro desde la GUI permite crear cuentas de aplicación y cuentas Linux regulares con `/home/<usuario>`; la contraseña de aplicación no se asigna a la cuenta Linux. El nombre debe cumplir `^[a-z_][a-z0-9_-]{0,31}$`. El hash SHA-256 de la contraseña viaja por el canal TCP; en un canal sin cifrar equivale a la credencial. Restringe `AllowedClientIP` y usa una VPN privada.
+- El registro desde la GUI intenta crear cuentas de aplicación y cuentas Linux regulares con `/home/<usuario>`; la contraseña de aplicación no se asigna a la cuenta Linux. El nombre debe cumplir `^[a-z_][a-z0-9_-]{0,31}$`. El hash SHA-256 de la contraseña viaja por el canal TCP; en un canal sin cifrar equivale a la credencial. Restringe `AllowedClientIP` y usa una VPN privada. Consulta la nota sobre `ProtectSystem=full` en [Instalación automatizada](#instalacion-systemd): con la unidad actual, el registro en vivo puede no poder escribir la base de cuentas de `/etc`.
 - Una sesión admite un comando a la vez; cada comando tiene un límite de cinco minutos y una salida máxima de 2 MiB. No hay TTY ni ejecución interactiva para programas como `vim`, `top` interactivo o `sudo` que soliciten contraseña.
 - El servidor admite hasta 32 conexiones concurrentes y limita los intentos fallidos por IP. El cliente no se reconecta automáticamente.
+
+<a id="guia-rapida-ejecutables"></a>
+## Guía rápida: instalar y usar los ejecutables
+
+Este es el recorrido recomendado para una primera instalación con los scripts y ejecutables generados por el proyecto. La IP que se escribe en el cliente es la **IP de Tailscale del servidor Debian**; `AllowedClientIP` en el servidor debe ser, en cambio, la **IP de Tailscale del equipo cliente Windows**.
+
+### 1. Preparar dependencias una sola vez
+
+**En Debian, en el equipo servidor:**
+
+1. Ejecuta `preparar-debian.sh` desde el administrador de archivos con **clic derecho → Ejecutar como programa**. Si aparece una solicitud de permisos, autorízala.
+2. El script instala o verifica Go y Tailscale. No instala todavía el servidor ni inicia el servicio.
+3. Inicia sesión en Tailscale en Debian (por ejemplo, con `sudo tailscale up`) y completa la autenticación que solicite.
+
+**En Windows, en el equipo cliente:**
+
+1. Haz doble clic en `preparar-windows.bat` y acepta los permisos de administrador si Windows los solicita.
+2. El preparador verifica/instala Go, Tailscale y el compilador C requerido por Fyne, y genera:
+   - `dist\windows\cliente-gui.exe`
+   - `dist\windows\cliente.exe`
+3. Inicia sesión en Tailscale en Windows con la misma cuenta/red privada que en Debian.
+
+La preparación se hace una vez y se repite solo si necesitas instalar/actualizar dependencias o regenerar los ejecutables. Si ya tienes ejecutables distribuidos por otro medio, confirma que correspondan a la versión de este repositorio.
+
+### 2. Conectar ambos equipos por Tailscale
+
+Tailscale crea una red privada entre los dispositivos autenticados. No necesitas redirigir puertos en el router. En ambos equipos, confirma que Tailscale aparezca conectado y consulta las direcciones asignadas:
+
+```bash
+tailscale ip -4
+```
+
+Anota dos valores distintos:
+
+| Dato | Dónde se usa |
+|---|---|
+| IP de Tailscale de Debian | Destino que introduces en la GUI o CLI cliente. |
+| IP de Tailscale de Windows | Valor de `AllowedClientIP` en la configuración del servidor. |
+
+Si `tailscale` no está disponible como comando en Windows, consulta la dirección del dispositivo en la aplicación de Tailscale. En Debian, confirma el estado con `tailscale status`.
+
+### 3. Instalar e iniciar el servidor en Debian
+
+Antes de instalar por primera vez, abre `deploy/configProyecto.conf` y establece `AllowedClientIP` con la IP de Tailscale de Windows. Mantén `Port=2306`, salvo que también cambies el puerto que utilizarán los clientes. Si el servicio ya estaba instalado, la configuración efectiva es `/etc/configProyecto.conf`; el instalador conserva ese archivo y no lo reemplaza.
+
+Después, desde el administrador de archivos, usa **clic derecho → Ejecutar como programa** sobre `instalar-servidor.sh` y asegúrate de que se abra en una terminal para ver el progreso y responder a la solicitud de Enter. Si el escritorio no ofrece una terminal, abre una en la raíz del proyecto y ejecuta `bash ./instalar-servidor.sh`. El script compila e instala el binario, configura los archivos de `/etc`, prepara las cuentas iniciales, instala/habilita la unidad y reinicia el servicio.
+
+> **Importante:** el instalador puede detener/reiniciar un servicio existente y cortar las sesiones conectadas. No lo ejecutes cada vez que quieras abrir el monitor CLI. Después de la instalación normal, systemd mantiene el servidor activo y lo inicia al arrancar Debian.
+
+Comprueba que se haya iniciado:
+
+```bash
+systemctl is-active servidor-operativos
+```
+
+El resultado esperado es `active`.
+
+### 4. Abrir la GUI cliente en Windows
+
+Haz doble clic en `dist\windows\cliente-gui.exe`. En la primera pantalla:
+
+1. En **Server IP**, escribe la IP de Tailscale de Debian (no la IP de Windows).
+2. En **Port**, deja `2306`, a menos que hayas configurado otro puerto.
+3. En **Period (s)**, deja `5` para recibir métricas cada cinco segundos. El valor debe ser mayor que cero y no superar el máximo configurado en el servidor (por defecto, 60).
+4. Selecciona **Connect to server**.
+
+En la pantalla de acceso:
+
+- **Iniciar sesión:** usa un usuario y contraseña de aplicación que ya estén configurados en `/etc/configProyecto.users`.
+- **Registrarse:** crea una cuenta nueva con un nombre Linux válido y confirma la contraseña. La aplicación intenta crear también el usuario Linux y `/home/<usuario>`; la contraseña de aplicación no se convierte en contraseña de inicio de sesión de Debian.
+
+La IP de destino y `AllowedClientIP` cumplen funciones diferentes: la primera identifica al servidor; la segunda autoriza la IP de origen del cliente. Si la conexión muestra “IP no autorizada”, revisa `AllowedClientIP` y reinicia el servicio después de cambiar su archivo.
+
+> **Si falla el registro desde la aplicación:** revisa la unidad instalada. La plantilla actual usa `ProtectSystem=full`, que hace `/etc` de solo lectura dentro del servicio, y no declara excepciones `ReadWritePaths` para la base de cuentas. Por eso las cuentas iniciales creadas por el instalador pueden funcionar aunque un registro nuevo en vivo falle. No es un problema de la GUI.
+
+### 5. Usar la terminal remota
+
+Los comandos se ejecutan en Debian como el usuario autenticado, no en Windows ni como root. Prueba:
+
+```bash
+whoami
+pwd
+ls -la
+cd /home/<usuario>
+```
+
+El directorio actual se conserva mientras dure la sesión. También están disponibles `history`, `history -c` y `bye` (cerrar sesión).
+
+**Límites de la terminal:**
+
+- Solo se procesa un comando a la vez.
+- Cada comando tiene un máximo de cinco minutos y se captura como máximo 2 MiB de salida.
+- No se crea un TTY/PTY. Editores y programas interactivos como `vim`, `top` interactivo, `sudo` que solicite contraseña o comandos que esperen entrada interactiva pueden no funcionar.
+- Los comandos se ejecutan en Debian; la GUI solo muestra la salida y las métricas que envía el servidor.
+- El texto de los comandos se guarda en el archivo local de eventos del servidor. No escribas contraseñas ni secretos como argumentos.
+
+### 6. Alternativa: cliente CLI en Windows
+
+Abre PowerShell en la raíz del proyecto. El ejecutable de consola requiere **tres argumentos**: IP de Tailscale de Debian, puerto y período en segundos. Puedes pedir la IP al iniciar:
+
+```powershell
+$serverIP = Read-Host "IP de Tailscale del servidor Debian"
+.\dist\windows\cliente.exe $serverIP 2306 5
+```
+
+Este ejecutable debe abrirse desde consola porque necesita esos argumentos; no basta con hacer doble clic. Al conectarse, sigue las indicaciones de usuario/contraseña y escribe los comandos en la consola. Para salir, escribe `bye`.
+
+### 7. Abrir la CLI de monitorización en Debian
+
+En el servidor, ejecuta `iniciar-cli-servidor.sh` con **clic derecho → Ejecutar como programa**. El script abre/usa una terminal y muestra métricas locales, clientes y eventos recientes.
+
+La CLI es un monitor separado: no es el servidor, no abre el puerto `2306` y no detiene ni reinicia `servidor-operativos.service`. Puedes salir con `q` + Enter o `Ctrl+C`; cerrar el monitor no corta las sesiones de los clientes.
 
 <a id="requisitos"></a>
 ## Requisitos del sistema
@@ -81,7 +194,7 @@ En Debian, el script de preparación instala o verifica Go y Tailscale. La auten
 bash ./preparar-debian.sh
 ```
 
-En Windows, abre PowerShell como administrador desde la raíz del repositorio:
+En Windows, puedes hacer doble clic en `preparar-windows.bat`; para ejecutarlo manualmente, abre PowerShell como administrador desde la raíz del repositorio:
 
 ```powershell
 .\preparar-windows.ps1
@@ -94,14 +207,14 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\preparar-windows.ps1
 ```
 
-El preparador de Windows instala Go, Tailscale y las herramientas de compilación de Fyne, y genera `dist\windows\cliente.exe` y `dist\windows\cliente-gui.exe`.
+El preparador de Windows instala/verifica Go, Tailscale y las herramientas de compilación de Fyne, y genera `dist\windows\cliente.exe` y `dist\windows\cliente-gui.exe`.
 
 </details>
 
 <a id="inicio-rapido"></a>
-## Guía de inicio rápido (desarrollo local)
+## Compilar y probar desde el código fuente
 
-Ejecuta estos pasos desde la raíz del repositorio. Antes de conectar equipos distintos, configura la VPN y la IP permitida siguiendo [Red privada y autorización del cliente](#red-privada).
+Esta sección es para desarrollar o recompilar manualmente. Si solo quieres utilizar los ejecutables, sigue primero la [guía rápida](#guia-rapida-ejecutables). Antes de conectar equipos distintos, configura la VPN y la IP permitida siguiendo [Red privada y autorización del cliente](#red-privada).
 
 <details>
 <summary>1. Configurar y ejecutar el servidor de desarrollo</summary>
@@ -218,10 +331,10 @@ Sustituye el marcador por la IP real. No crees una regla de redirección del pue
 <a id="instalacion-systemd"></a>
 ### Instalación automatizada con systemd
 
-El instalador usa `/usr/local/go/bin/go` y rutas relativas al repositorio. Comprueba esa ruta y ejecuta el script desde la raíz del proyecto:
+El instalador busca Go compatible y usa rutas relativas al repositorio. Ejecuta el script desde la raíz del proyecto:
 
 ```bash
-/usr/local/go/bin/go version
+go version
 chmod +x ./instalar-servidor.sh
 ./instalar-servidor.sh
 ```
@@ -232,7 +345,7 @@ También se puede ejecutar con Bash:
 bash ./instalar-servidor.sh
 ```
 
-El usuario actual debe poder usar `sudo`. El script instala la configuración, legible por el monitor CLI (`root:root 0644`), el archivo de usuarios (`root:root 0600`), el binario y la unidad systemd. Crea cada usuario inicial que falte con `useradd -m -d /home/<usuario> -s /bin/bash`, verifica que sea una cuenta regular y asegura que su home pertenezca a ese usuario. Al final imprime el estado y siempre solicita Enter; desde el administrador de archivos, selecciona **Ejecutar en un terminal** para conservar la ventana abierta. Si `/etc/configProyecto.users` ya existe, conserva su contenido y corrige propietario y permisos.
+El usuario actual debe poder usar `sudo`. El script instala la configuración, legible por el monitor CLI (`root:root 0644`), el archivo de usuarios (`root:root 0600`), el binario y la unidad systemd. Crea cada usuario inicial que falte con `useradd -m -d /home/<usuario> -s /bin/bash`, verifica que sea una cuenta regular y asegura que su home pertenezca a ese usuario. Al final imprime el estado y siempre solicita Enter; desde el administrador de archivos, ejecútalo como programa en una terminal para conservar la ventana abierta. Si `/etc/configProyecto.users` ya existe, conserva su contenido y corrige propietario y permisos.
 
 > Revisa `deploy/configProyecto.conf` antes de instalar: el valor de `AllowedClientIP` debe ser la IP VPN del cliente autorizado. Si editas el archivo de `/etc/` después de la instalación, reinicia systemd como se indica arriba.
 
@@ -316,7 +429,7 @@ sudo stat -c '%U:%G %a %n' /var/log/proyecto-operativos/servidor.log
 sudo tail -n 50 /var/log/proyecto-operativos/servidor.log
 ```
 
-La unidad aplica `ProtectSystem=full`, permite acceso a `/home`, protege `/usr` y `/boot` contra escritura, y restringe las capacidades a las necesarias para `useradd`, `chown`, el cambio de UID/GID y cancelar procesos hijos. Mantiene `NoNewPrivileges=true` para que una sesión no pueda elevar privilegios ejecutando binarios SUID.
+La unidad permite acceso a `/home`, restringe capacidades y mantiene `NoNewPrivileges=true`. **Revisa una discrepancia antes de depender del registro de usuarios en vivo:** en systemd, `ProtectSystem=full` hace que `/etc` sea de solo lectura dentro del servicio. La unidad de este repositorio no declara `ReadWritePaths` para `/etc/passwd`, `/etc/shadow`, `/etc/group` y archivos relacionados, aunque el comentario de la unidad diga que `useradd` puede actualizarlos. El instalador crea las cuentas iniciales fuera del sandbox; el registro de una cuenta nueva desde el servidor puede fallar. La unidad realmente instalada debe verificarse y ajustarse por el administrador antes de depender de esa operación.
 
 </details>
 
@@ -345,21 +458,21 @@ Para equipos distintos, conecta primero a la VPN y usa como destino la IP privad
 <a id="cliente-consola"></a>
 ### Consola
 
-Desde PowerShell, en la raíz del repositorio, compila y ejecuta con IP, puerto y período:
+Desde PowerShell, en la raíz del repositorio, ejecuta el binario generado con IP, puerto y período:
 
 ```powershell
-go build -o cliente.exe .\cliente
-.\cliente.exe <IP_VPN_SERVIDOR> 2306 5
+$serverIP = Read-Host "IP de Tailscale del servidor Debian"
+.\dist\windows\cliente.exe $serverIP 2306 5
 ```
 
-El programa valida los tres argumentos y termina con un mensaje de uso si falta alguno o no es válido. Tras autenticarte, escribe comandos Linux; se ejecutan en Debian, no en Windows. El directorio de trabajo se conserva durante la sesión. Usa `history` para ver el historial de la sesión, `history -c` para limpiarlo y `bye` para cerrar la conexión.
+Para compilarlo manualmente, usa `go build -o cliente.exe .\cliente`. El programa valida los tres argumentos y termina con un mensaje de uso si falta alguno o no es válido. Tras autenticarte, escribe comandos Linux; se ejecutan en Debian, no en Windows. El directorio de trabajo se conserva durante la sesión. Usa `history` para ver el historial de la sesión, `history -c` para limpiarlo y `bye` para cerrar la conexión.
 
 <a id="cliente-fyne"></a>
 ### Interfaz gráfica Fyne
 
 La GUI presenta un flujo en dos pasos antes de la terminal remota y el panel de CPU, memoria y disco:
 
-1. **Conexión al servidor:** campos `Server IP`, `Port` y `Period (s)` con los valores por defecto `100.83.168.60`, `2306` y `5`. El botón **Connect to server** abre el socket TCP y valida la conectividad y la autorización por IP del servidor; si falla, el error aparece en la misma tarjeta sin avanzar.
+1. **Conexión al servidor:** campos `Server IP`, `Port` y `Period (s)`. Escribe la IP actual de Tailscale de Debian (no dependas de la IP prellenada, que puede no ser la de tu servidor), el puerto `2306` y el período en segundos. El botón **Connect to server** abre el socket TCP y valida la conectividad y la autorización por IP del servidor; si falla, el error aparece en la misma tarjeta sin avanzar.
 2. **Acceso de usuario:** dos pestañas del mismo tamaño, **Iniciar sesion** y **Registrarse**, comparten el indicador `Connected to <IP>:<Puerto>`. El login usa la autenticación por desafío y SHA-256 e informa los intentos restantes. El registro valida el nombre (sin `:`), exige que las contraseñas coincidan, calcula el SHA-256 y lo envía al servidor. **Cambiar servidor** cierra el socket y vuelve al Paso 1.
 
 Tras autenticarse o registrarse, la ventana muestra la terminal, el historial de reportes y las métricas. Reutiliza el protocolo de `src/sockets`; la recepción de mensajes ocurre concurrentemente. Solo permite un comando pendiente a la vez.
@@ -399,6 +512,7 @@ En la ventana, introduce la IP VPN del servidor, el puerto `2306` y el período;
 |---|---|
 | El cliente no conecta | Comprueba que el servicio esté activo, ambos equipos estén conectados a la VPN, el destino sea la IP privada de Debian y TCP `2306` esté permitido por el firewall. |
 | `IP no autorizada` | `AllowedClientIP` debe coincidir con la IP VPN de origen del cliente Windows, o incluirla en una red CIDR. Después de editar `/etc/configProyecto.conf`, reinicia el servicio. |
+| El registro de usuario nuevo falla | Comprueba los logs y la unidad realmente instalada. La plantilla actual usa `ProtectSystem=full` sin excepciones `ReadWritePaths` para los archivos de cuentas de `/etc`, que pueden quedar de solo lectura dentro del servicio. Las cuentas iniciales las crea el instalador fuera de ese sandbox. |
 | systemd no inicia el servicio | Revisa `systemctl status servidor-operativos --no-pager`, `journalctl -u servidor-operativos -b -e --no-pager`, los permisos de archivos y `systemd-analyze verify`. |
 | No aparecen logs en archivo | Comprueba `LogFile`, el propietario y permisos de `/var/log/proyecto-operativos`; consulta también `journalctl -u servidor-operativos`. |
 | El instalador no encuentra Go | Confirma `/usr/local/go/bin/go version`; el instalador requiere el ejecutable en esa ruta absoluta y debe ejecutarse desde la raíz del repositorio. |
