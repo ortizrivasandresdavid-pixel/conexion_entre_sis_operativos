@@ -66,7 +66,6 @@ func TestLoadUsersRejectsInvalidLinuxUsername(t *testing.T) {
 
 func TestUserStoreRegisterPersistsAndAuthenticates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "users.conf")
-	// Sin salto de línea final: el registro debe insertar el separador.
 	content := "admin:" + HashPassword("linux")
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)

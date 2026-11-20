@@ -41,8 +41,6 @@ func (e *AuthResultError) Error() string {
 	return e.Message
 }
 
-// RegistrationError describe un rechazo del registro (por ejemplo, un usuario
-// duplicado o un hash inválido). La GUI lo muestra sin abandonar el Paso 2.
 type RegistrationError struct {
 	Code    string
 	Message string

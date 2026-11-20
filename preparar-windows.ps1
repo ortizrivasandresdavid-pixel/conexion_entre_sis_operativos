@@ -1,6 +1,5 @@
 $ErrorActionPreference = 'Stop'
 
-# Verificar permisos de administrador sin cerrar la ventana abruptamente
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host "Solicitando permisos de Administrador..." -ForegroundColor Yellow
@@ -29,7 +28,6 @@ function Find-Go {
 }
 
 function Find-Gcc {
-    # Buscar primero en mingw64 (instalación estándar) y luego en ucrt64
     $candidates = @(
         'C:\msys64\mingw64\bin\gcc.exe',
         'C:\msys64\ucrt64\bin\gcc.exe'
@@ -68,7 +66,6 @@ function Get-GoVersion {
     return [version]$version
 }
 
-# Leer versión mínima de Go desde go.mod (por defecto 1.22.0)
 $requiredGo = [version]'1.22.0'
 $goModPath = Join-Path $root 'go.mod'
 if (Test-Path $goModPath) {

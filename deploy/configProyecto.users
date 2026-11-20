@@ -1,8 +1,1 @@
-# /etc/configProyecto.users
-# Formato: usuario:SHA256(password)
-# El servicio root agrega aquí las cuentas creadas desde la GUI y las provisiona
-# como usuarios Linux con su propio /home/<usuario>.
-# Se instala como root:root 0600; la unidad permite escritura controlada en /etc.
-# Cuenta de laboratorio: admin / linux
-# Cambia esta cuenta antes de usar el servidor fuera de una practica local.
 admin:caf90169eefa5f807d577486b9f795ab86ae2983c5c20806cff959117e90af18

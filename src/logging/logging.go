@@ -1,9 +1,3 @@
-// Package logging configura el registro estructurado del servidor.
-//
-// El logger escribe cada evento en la salida estándar (que systemd recoge en
-// journald) y en un archivo persistente con rotación por tamaño. La rotación
-// se implementa aquí, sin dependencias externas, para que el servidor pueda
-// compilarse solo con la biblioteca estándar.
 package logging
 
 import (
@@ -16,17 +10,14 @@ import (
 	"sync"
 )
 
-const defaultMaxSize = 10 << 20 // 10 MiB
+const defaultMaxSize = 10 << 20
 
-// Options describe el destino persistente del logger.
 type Options struct {
 	Path         string
 	MaxSizeBytes int64
 	Backups      int
 }
 
-// New crea un logger que escribe en stdout y en un archivo rotativo.
-// El llamador debe cerrar el *RotatingWriter devuelto al terminar.
 func New(options Options) (*slog.Logger, *RotatingWriter, error) {
 	if options.MaxSizeBytes <= 0 {
 		options.MaxSizeBytes = defaultMaxSize
@@ -46,9 +37,6 @@ func New(options Options) (*slog.Logger, *RotatingWriter, error) {
 	return slog.New(handler), writer, nil
 }
 
-// Console devuelve un logger que solo escribe en stdout. Se usa como respaldo
-// cuando el archivo de log no se puede abrir (por ejemplo, al ejecutar el
-// servidor como usuario normal sin permisos sobre /var/log).
 func Console() *slog.Logger {
 	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -56,8 +44,6 @@ func Console() *slog.Logger {
 	return slog.New(handler)
 }
 
-// RotatingWriter es un io.Writer que rota el archivo cuando supera MaxSize.
-// Conserva hasta Backups archivos anteriores: app.log.1, app.log.2, etc.
 type RotatingWriter struct {
 	mu      sync.Mutex
 	path    string
@@ -68,7 +54,6 @@ type RotatingWriter struct {
 	closed  bool
 }
 
-// NewRotatingWriter abre (o crea) path y devuelve un escritor con rotación.
 func NewRotatingWriter(path string, maxSize int64, backups int) (*RotatingWriter, error) {
 	if path == "" {
 		return nil, errors.New("la ruta del archivo de log no puede estar vacía")
@@ -99,7 +84,6 @@ func NewRotatingWriter(path string, maxSize int64, backups int) (*RotatingWriter
 	}, nil
 }
 
-// Write escribe p en el archivo y rota antes si es necesario.
 func (w *RotatingWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -121,7 +105,6 @@ func (w *RotatingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Close sincroniza y cierra el archivo. Es seguro llamarlo más de una vez.
 func (w *RotatingWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -133,16 +116,12 @@ func (w *RotatingWriter) Close() error {
 	if w.file == nil {
 		return nil
 	}
-	// Sync reduce la ventana en la que un corte de energía puede perder las
-	// últimas líneas de auditoría. No se hace en cada Write para no penalizar
-	// cada comando.
 	_ = w.file.Sync()
 	err := w.file.Close()
 	w.file = nil
 	return err
 }
 
-// Path devuelve la ruta del archivo activo.
 func (w *RotatingWriter) Path() string {
 	return w.path
 }
@@ -154,8 +133,6 @@ func (w *RotatingWriter) rotateLocked() error {
 	}
 
 	if err := rotateFiles(w.path, w.backups); err != nil {
-		// La rotación fallida no debe impedir seguir registrando eventos: se
-		// avisa por stderr y se continúa escribiendo en el archivo actual.
 		fmt.Fprintf(os.Stderr, "logging: no se pudo rotar %s: %v\n", w.path, err)
 	}
 

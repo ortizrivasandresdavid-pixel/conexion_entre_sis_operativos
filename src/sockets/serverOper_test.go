@@ -17,8 +17,6 @@ type authenticationOutcome struct {
 	err      error
 }
 
-// testUserStore crea un archivo de usuarios temporal y devuelve el store que
-// comparten las conexiones del servidor en las pruebas.
 func testUserStore(t *testing.T, users map[string]string) *login.UserStore {
 	t.Helper()
 	lines := make([]string, 0, len(users))
@@ -206,7 +204,6 @@ func TestAuthenticateServerRegistersUserAndPersistsIt(t *testing.T) {
 		t.Fatalf("registered username = %q, want %q", outcome.username, username)
 	}
 
-	// El usuario debe quedar autenticable en memoria y persistido en disco.
 	const nonce = "verification-nonce"
 	if !store.Verify(username, nonce, login.MakeProof(username, password, nonce)) {
 		t.Fatal("registered user cannot authenticate")
@@ -262,7 +259,6 @@ func TestAuthenticateServerRejectsDuplicateRegistration(t *testing.T) {
 		t.Fatalf("register result = %#v, want USER_EXISTS rejection", result)
 	}
 
-	// El servidor mantiene la conexión y envía un desafío nuevo para reintentar.
 	next, err := reader.Read()
 	if err != nil {
 		t.Fatal(err)

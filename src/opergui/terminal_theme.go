@@ -78,8 +78,6 @@ func (t terminalTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant
 	}
 }
 
-// Font fuerza la tipografía monoespaciada en toda la aplicación, salvo los
-// iconos simbólicos, para mantener la estética de terminal.
 func (t terminalTheme) Font(style fyne.TextStyle) fyne.Resource {
 	if style.Symbol {
 		return t.fallback.Font(style)

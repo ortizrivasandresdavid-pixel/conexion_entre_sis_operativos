@@ -21,8 +21,6 @@ func newEventTail(path string) *eventTail {
 	return &eventTail{path: path}
 }
 
-// ReadNew reads complete JSONL records without changing the source file. It
-// detects truncation and rename-based rotation by comparing the opened file.
 func (t *eventTail) ReadNew() ([]sockets.GUIEvent, error) {
 	file, err := os.Open(t.path)
 	if err != nil {

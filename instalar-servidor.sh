@@ -76,7 +76,6 @@ ensure_initial_users() {
 
 echo "=== Instalador de ${SERVICE_NAME} ==="
 
-# 1. Detener servicio systemd y cualquier instancia previa en ejecución
 echo "[1/7] Deteniendo instancias previas..."
 if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
     run_root systemctl stop "$SERVICE_NAME" || true
@@ -86,7 +85,6 @@ run_root pkill -x "servidor" 2>/dev/null || true
 run_root pkill -x "servidor-operativos" 2>/dev/null || true
 sleep 1
 
-# 2. Localizar versión de Go compatible con go.mod
 echo "[2/7] Verificando instalación de Go..."
 MIN_GO_VERSION="$(awk '$1 == "go" { print $2; exit }' "$ROOT_DIR/go.mod")"
 if [[ "$MIN_GO_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
@@ -118,13 +116,11 @@ if [[ -z "$GO_BIN" ]]; then
     exit 1
 fi
 
-# 3. Preparar directorios de estado y logs
 echo "[3/7] Preparando directorios del sistema..."
 run_root mkdir -p "$STATE_DIR" "$LOG_DIR"
 run_root chown -R root:root "$STATE_DIR" "$LOG_DIR"
 run_root chmod 0750 "$STATE_DIR" "$LOG_DIR"
 
-# 4. Compilar el binario de producción e instalarlo en /usr/local/bin
 echo "[4/7] Compilando binario del servidor..."
 TMP_BIN="$(mktemp /tmp/servidor-operativos.XXXXXX)"
 cd "$ROOT_DIR"
@@ -132,7 +128,6 @@ cd "$ROOT_DIR"
 run_root install -o root -g root -m 0755 "$TMP_BIN" "$BIN_PATH"
 rm -f "$TMP_BIN"
 
-# 5. Instalar archivos de configuración y base de usuarios en /etc
 echo "[5/7] Instalando configuración en /etc..."
 CONF_SRC="$ROOT_DIR/deploy/configProyecto.conf"
 [[ ! -f "$CONF_SRC" ]] && CONF_SRC="$ROOT_DIR/servidor/server.conf"
@@ -142,7 +137,6 @@ USERS_SRC="$ROOT_DIR/deploy/configProyecto.users"
 
 if [[ ! -f "$CONF_DEST" ]]; then
     run_root install -o root -g root -m 0644 "$CONF_SRC" "$CONF_DEST"
-    # Asegurar que UsersFile y LogFile apunten a las rutas del sistema
     run_root sed -i "s|^UsersFile=.*|UsersFile=${USERS_DEST}|" "$CONF_DEST"
     run_root sed -i "s|^LogFile=.*|LogFile=${LOG_DIR}/servidor.log|" "$CONF_DEST"
 else
@@ -160,7 +154,6 @@ else
     echo "      ${USERS_DEST} ya existe; se conservan los usuarios registrados."
 fi
 
-# 6. Provisionar cuentas iniciales e instalar la unidad systemd
 echo "[6/7] Configurando servicio systemd..."
 ensure_initial_users
 UNIT_SRC="$ROOT_DIR/deploy/${SERVICE_NAME}.service"
@@ -171,7 +164,6 @@ else
     exit 1
 fi
 
-# 7. Habilitar, iniciar y verificar el servicio en segundo plano
 echo "[7/7] Iniciando servicio en segundo plano..."
 run_root systemctl daemon-reload
 run_root systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true

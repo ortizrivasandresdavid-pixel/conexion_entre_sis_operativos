@@ -19,12 +19,7 @@ import (
 )
 
 const (
-	// serverAuthTimeout es el margen para que el cliente complete la
-	// autenticación o el registro. Es amplio porque la GUI mantiene el socket
-	// abierto mientras el usuario escribe en el Paso 2.
-	serverAuthTimeout = 5 * time.Minute
-	// serverAuthResultGrace deja tiempo para leer la respuesta antes de que
-	// expire el plazo durante una espera progresiva.
+	serverAuthTimeout     = 5 * time.Minute
 	serverAuthResultGrace = 30 * time.Second
 )
 
@@ -39,17 +34,13 @@ type ServerConfig struct {
 	LogFile                    string
 	LogMaxSizeMB               int
 	LogBackups                 int
-	// EventFile es el JSONL local del monitor gráfico. No es un socket de
-	// clientes: si no se puede escribir, el servidor sigue escuchando.
-	EventFile string
+	EventFile                  string
 }
 
 func RunServer(ctx context.Context, config ServerConfig) error {
 	if err := validateServerConfig(config); err != nil {
 		return err
 	}
-	// Falla al arrancar (y no en la primera conexión) si el servidor no tiene
-	// bash/sh disponible para ejecutar los comandos remotos.
 	if err := shell.CheckAvailable(); err != nil {
 		return fmt.Errorf("shell remoto no disponible: %w", err)
 	}
@@ -63,8 +54,6 @@ func RunServer(ctx context.Context, config ServerConfig) error {
 	if err != nil {
 		return fmt.Errorf("abrir socket servidor: %w", err)
 	}
-	// El monitor gráfico solo lee este archivo. Abrirlo o cerrarlo no toca
-	// el puerto ni las sesiones. Si el archivo no se puede crear, se sigue.
 	events, eventErr := openGUIEventLog(config.EventFile)
 	if eventErr != nil {
 		slog.Warn("monitor gráfico sin flujo de eventos; las sesiones siguen activas",
@@ -278,8 +267,6 @@ func authenticateServer(
 			if registered {
 				return request.Username, nil
 			}
-			// Registro rechazado: se envía un desafío nuevo y se permite
-			// corregir el nombre de usuario sin reabrir el socket.
 			continue
 		}
 		if request.Type != "authenticate" || request.Username == "" {
@@ -387,9 +374,6 @@ func authenticateServer(
 	}
 }
 
-// handleRegistration valida y persiste una cuenta nueva. Devuelve registered
-// true solo si el usuario quedó creado; en cualquier rechazo responde con
-// register_result y deja la conexión lista para otro intento.
 func handleRegistration(
 	conn net.Conn,
 	accounts *login.UserStore,

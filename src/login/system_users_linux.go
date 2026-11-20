@@ -13,8 +13,6 @@ import (
 	"syscall"
 )
 
-// EnsureSystemUser creates a regular Linux account on first use and verifies
-// its home directory before it can receive a remote shell.
 func EnsureSystemUser(username string) error {
 	if err := ValidateUsername(username); err != nil {
 		return err

@@ -7,9 +7,6 @@ import (
 	"fyne.io/fyne/v2/test"
 )
 
-// TestAccessTabsShareBodySize asegura que las pestañas no cambien el tamaño de
-// la tarjeta ni el área del cuerpo, de modo que los botones queden siempre en
-// la misma posición.
 func TestAccessTabsShareBodySize(t *testing.T) {
 	program := test.NewApp()
 	defer program.Quit()
@@ -21,7 +18,6 @@ func TestAccessTabsShareBodySize(t *testing.T) {
 	loginSize := view.loginForm.Size()
 
 	view.switchTab(1)
-	// Forzar un nuevo layout tras cambiar la pestaña visible.
 	view.body.Resize(fyne.NewSize(bodySize.Width+1, bodySize.Height+1))
 	view.body.Resize(bodySize)
 	registerSize := view.registerForm.Size()

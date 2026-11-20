@@ -19,10 +19,7 @@ import (
 )
 
 const (
-	// Ruta usada por el servicio systemd. Se puede cambiar con -config.
-	defaultConfigPath = "/etc/configProyecto.conf"
-	// Los logs se guardan en un directorio para que la rotación funcione con
-	// ProtectSystem y LogsDirectory= de systemd.
+	defaultConfigPath   = "/etc/configProyecto.conf"
 	defaultLogPath      = sockets.DefaultServerLogFile
 	defaultLogMaxSizeMB = 10
 	defaultLogBackups   = 5
@@ -72,9 +69,6 @@ func run() error {
 		Backups:      config.LogBackups,
 	})
 	if err != nil {
-		// Si el usuario pidió explícitamente -log, el fallo es fatal: no
-		// queremos arrancar sin el registro de auditoría solicitado. Si solo
-		// se usó el valor por defecto, se continúa con stdout.
 		if flagWasSet("log") {
 			return fmt.Errorf("abrir archivo de log %s: %w", config.LogFile, err)
 		}
@@ -114,10 +108,6 @@ func flagWasSet(name string) bool {
 	return set
 }
 
-// resolveConfigPath aplica la ruta indicada por -config o, si no se indicó,
-// usa /etc/configProyecto.conf. Para no romper el flujo de desarrollo anterior,
-// si esa ruta no existe intenta servidor/server.conf relativo al directorio
-// actual.
 func resolveConfigPath(value string, explicit bool) (string, error) {
 	if explicit {
 		return value, nil
@@ -147,8 +137,6 @@ func absolutePath(path string) (string, error) {
 	return absolute, nil
 }
 
-// isAbsolutePath reconoce también las rutas estilo Linux cuando el binario se
-// compila o prueba en Windows (por ejemplo, /etc/configProyecto.conf).
 func isAbsolutePath(path string) bool {
 	return filepath.IsAbs(path) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\`)
 }

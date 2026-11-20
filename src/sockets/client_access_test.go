@@ -10,8 +10,6 @@ import (
 	"operativos/src/login"
 )
 
-// fakeSessionServer ejecuta el handshake real del servidor sobre una conexión
-// y, una vez autenticada o registrada, responde al período y a los comandos.
 func fakeSessionServer(t *testing.T, conn net.Conn, store *login.UserStore, limiter *login.AttemptLimiter) {
 	t.Helper()
 	defer conn.Close()
@@ -141,8 +139,6 @@ func TestAccessLoginRetriesAfterRejectedPassword(t *testing.T) {
 		t.Fatalf("auth error = %#v, want 2 attempts and a retry delay", authError)
 	}
 
-	// El servidor envía el desafío nuevo tras la espera progresiva; el cliente
-	// debe consumirlo y autenticarse en el mismo socket.
 	session, err := access.Login("admin", "linux", 5)
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +175,6 @@ func TestConnectAccessRegisterPersistsAndLogsIn(t *testing.T) {
 		t.Fatal("registered user cannot authenticate on the server store")
 	}
 
-	// Una nueva conexión debe poder autenticarse con la cuenta creada.
 	second, err := ConnectAccess(ctx, address)
 	if err != nil {
 		t.Fatal(err)

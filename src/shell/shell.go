@@ -1,9 +1,3 @@
-// Package shell ejecuta comandos reales en el servidor, como una terminal.
-//
-// Cada sesión conserva el directorio de trabajo entre comandos, de modo que
-// "cd carpeta" afecta a los comandos siguientes. No hay lista blanca: el
-// comando llega al servidor y se evalúa con bash (o sh), devolviendo stdout y
-// stderr mezclados en el orden en que se produjeron.
 package shell
 
 import (
@@ -23,26 +17,16 @@ import (
 )
 
 const (
-	// MaxOutputBytes limita la salida que se envía al cliente para no agotar
-	// la memoria ni romper el protocolo. Si se supera se añade un aviso.
-	MaxOutputBytes = 2 << 20 // 2 MiB
-	// DefaultTimeout evita que un comando interactivo o colgado bloquee la
-	// sesión para siempre.
+	MaxOutputBytes = 2 << 20
 	DefaultTimeout = 5 * time.Minute
 )
 
-// Result es el resultado de un comando.
 type Result struct {
-	// Output contiene stdout y stderr mezclados.
-	Output string
-	// ExitCode es el código de salida de bash (0 si todo fue bien).
+	Output   string
 	ExitCode int
-	// Dir es el directorio de trabajo después de ejecutar el comando.
-	Dir string
+	Dir      string
 }
 
-// Session representa una sesión de shell remota con su propio directorio de
-// trabajo. Los comandos de una misma sesión se ejecutan de forma serializada.
 type Session struct {
 	mu        sync.Mutex
 	dir       string
@@ -51,13 +35,9 @@ type Session struct {
 	uid       uint32
 	gid       uint32
 	groups    []uint32
-	// Timeout es el tiempo máximo por comando. Si es cero se usa
-	// DefaultTimeout.
-	Timeout time.Duration
+	Timeout   time.Duration
 }
 
-// NewSession crea una sesión de shell ejecutada con la identidad del usuario
-// Linux indicado y comienza en su directorio personal.
 func NewSession(username string) (*Session, error) {
 	if runtime.GOOS == "windows" {
 		return nil, errors.New("la ejecución remota de comandos requiere Linux o macOS (bash/sh con descriptores extra)")
@@ -104,7 +84,6 @@ func NewSession(username string) (*Session, error) {
 	}, nil
 }
 
-// CheckAvailable comprueba al arrancar que haya una shell POSIX ejecutable.
 func CheckAvailable() error {
 	if runtime.GOOS == "windows" {
 		return errors.New("la ejecución remota de comandos requiere Linux o macOS (bash/sh con descriptores extra)")
@@ -113,17 +92,12 @@ func CheckAvailable() error {
 	return err
 }
 
-// Dir devuelve el directorio de trabajo actual de la sesión.
 func (s *Session) Dir() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.dir
 }
 
-// Execute evalúa command en la sesión y devuelve su salida y su código de
-// salida. Solo devuelve error cuando el comando no se pudo ejecutar (shell
-// ausente, tiempo límite, contexto cancelado); un comando que termina con
-// código distinto de cero no es un error de ejecución.
 func (s *Session) Execute(ctx context.Context, command string) (Result, error) {
 	command = strings.TrimSpace(command)
 	s.mu.Lock()
@@ -157,10 +131,6 @@ func (s *Session) Execute(ctx context.Context, command string) (Result, error) {
 	}
 	defer dirReader.Close()
 
-	// El comando viaja en una variable de entorno para no tener que citarlo
-	// dentro del script. eval lo ejecuta en el shell actual, así "cd" cambia
-	// el directorio de verdad. El script siempre informa el nuevo directorio
-	// por el descriptor 3 y termina con el código de salida del comando.
 	const script = `eval "$DSH_CMD"
 __dsh_status=$?
 pwd -P >&3 2>/dev/null
@@ -184,8 +154,6 @@ exit $__dsh_status`
 		_ = dirWriter.Close()
 		return result, fmt.Errorf("iniciar shell: %w", err)
 	}
-	// El proceso hijo ya heredó los descriptores; cerramos nuestras copias
-	// para que las lecturas terminen cuando el hijo cierre las suyas.
 	_ = outputWriter.Close()
 	_ = dirWriter.Close()
 
@@ -248,8 +216,6 @@ exit $__dsh_status`
 		runErr = fmt.Errorf("ejecutar shell: %w", waitErr)
 	}
 
-	// Si un proceso lanzado en segundo plano heredó la tubería, no esperamos
-	// indefinidamente: cerramos y conservamos lo recibido.
 	select {
 	case <-copyDone:
 	case <-time.After(500 * time.Millisecond):
@@ -279,8 +245,6 @@ exit $__dsh_status`
 	return result, runErr
 }
 
-// Execute ejecuta command en una sesión local compartida bajo la identidad del
-// usuario actual y conserva el directorio entre comandos.
 func Execute(ctx context.Context, command string) (string, error) {
 	defaultMu.Lock()
 	if defaultSession == nil {
@@ -317,7 +281,6 @@ func findShell() (string, error) {
 	return "", errors.New("no se encontró bash ni sh en PATH; instala bash para ejecutar comandos")
 }
 
-// withEnv reemplaza (o agrega) key en env sin duplicarla.
 func withEnv(env []string, key, value string) []string {
 	prefix := key + "="
 	result := make([]string, 0, len(env)+1)

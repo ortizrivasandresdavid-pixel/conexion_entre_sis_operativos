@@ -13,21 +13,13 @@ import (
 )
 
 const (
-	// DefaultServerLogFile es el log de auditoría cuando LogFile no viene en
-	// la configuración. La GUI del servidor no lo lee.
 	DefaultServerLogFile = "/var/log/proyecto-operativos/servidor.log"
-	// GUIEventFileName es el flujo JSONL que el monitor gráfico lee en vivo.
-	// Vive junto al log salvo que EventFile indique otra ruta.
-	GUIEventFileName = "eventos-gui.jsonl"
-	// DefaultGUIEventFile es la ruta de producción, legible por el usuario
-	// de escritorio cuando el directorio queda en 0755 y el archivo en 0644.
-	DefaultGUIEventFile = "/var/log/proyecto-operativos/" + GUIEventFileName
+	GUIEventFileName     = "eventos-gui.jsonl"
+	DefaultGUIEventFile  = "/var/log/proyecto-operativos/" + GUIEventFileName
 
 	maxGUIEventBytes = 8 << 20
 )
 
-// GUIEvent es una línea del flujo local que consume la GUI del servidor.
-// El servidor TCP no usa este tipo en el protocolo con los clientes.
 type GUIEvent struct {
 	Type          string `json:"type"`
 	Timestamp     string `json:"timestamp"`
@@ -44,9 +36,6 @@ type GUIEvent struct {
 	Error         string `json:"error,omitempty"`
 }
 
-// ResolveGUIEventFile elige el JSONL de la GUI con la misma regla en el
-// servidor y en el monitor: EventFile si está definido; si no, el archivo
-// eventos-gui.jsonl en el directorio de LogFile.
 func ResolveGUIEventFile(logFile, eventFile, baseDir string) string {
 	eventFile = strings.TrimSpace(eventFile)
 	if eventFile != "" {
@@ -85,8 +74,6 @@ func joinConfigPath(dir, name string) string {
 	return filepath.Join(dir, name)
 }
 
-// guiEventLog escribe eventos en un JSONL local. Un fallo de disco no se
-// propaga a la sesión TCP: el monitor es opcional.
 type guiEventLog struct {
 	mu      sync.Mutex
 	file    *os.File
@@ -133,8 +120,6 @@ func (e *guiEventLog) Close() error {
 	return err
 }
 
-// session registra conexión, login o desconexión. authenticated solo resta
-// un cliente activo cuando la sesión había entrado con login.
 func (e *guiEventLog) session(action, ip, user string, authenticated bool) {
 	if e == nil {
 		return
@@ -273,8 +258,6 @@ func ensureEventDir(path string) error {
 		}
 	}
 	if missing || isSharedEventDir(dir) {
-		// 0755 deja entrar al usuario de escritorio. No se tocan directorios
-		// del proyecto: ahí puede vivir users.conf.
 		if err := os.Chmod(dir, 0755); err != nil && missing {
 			return fmt.Errorf("permisos de %s: %w", dir, err)
 		}
@@ -298,8 +281,6 @@ func createGUIEventFile(path string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("abrir flujo de eventos %s: %w", path, err)
 	}
-	// La umask del servicio (0027) dejaría el archivo en 0640. El monitor
-	// corre con el usuario de escritorio y necesita poder leerlo.
 	if err := os.Chmod(path, 0644); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("permisos de %s: %w", path, err)

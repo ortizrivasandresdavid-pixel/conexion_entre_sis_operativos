@@ -14,33 +14,19 @@ import (
 )
 
 const (
-	// accessTimeout es el tiempo que el servidor espera las credenciales tras
-	// enviar el desafío. Coincide con el margen del servidor para que el usuario
-	// pueda escribir en el Paso 2 sin que la conexión expire.
-	accessTimeout = 5 * time.Minute
-	// sessionSetupTimeout limita el intercambio de set_period antes de entregar
-	// la sesión ya autenticada a la GUI.
+	accessTimeout       = 5 * time.Minute
 	sessionSetupTimeout = 30 * time.Second
 )
 
-// ErrAccessClosed indica que la conexión del Paso 1 se cerró antes de completar
-// el login o el registro.
 var ErrAccessClosed = errors.New("la conexión con el servidor está cerrada")
 
-// AccessConnection representa una conexión TCP que ya superó la validación de
-// conectividad/autorización del servidor (recibió un auth_challenge) pero aún no
-// se ha autenticado. Permite mantener una única conexión entre el Paso 1 y el
-// Paso 2 y reutilizarla si el usuario corrige sus credenciales.
 type AccessConnection struct {
 	conn    net.Conn
 	reader  *messageReader
 	address string
 	ctx     context.Context
 
-	// mu serializa las operaciones del protocolo de acceso.
-	mu sync.Mutex
-	// connMu protege la propiedad de conn y el cierre desde la UI sin esperar a
-	// que termine una lectura bloqueada.
+	mu          sync.Mutex
 	connMu      sync.Mutex
 	closed      bool
 	stopWatcher func() bool
@@ -48,9 +34,6 @@ type AccessConnection struct {
 	nonce string
 }
 
-// ConnectAccess abre el socket TCP y valida la conectividad y la autorización
-// por IP del cliente leyendo el primer desafío del servidor. No envía
-// credenciales: el login o el registro se realizan después con Login/Register.
 func ConnectAccess(ctx context.Context, address string) (*AccessConnection, error) {
 	if strings.TrimSpace(address) == "" {
 		return nil, fmt.Errorf("la dirección del servidor no puede estar vacía")
@@ -92,14 +75,10 @@ func ConnectAccess(ctx context.Context, address string) (*AccessConnection, erro
 	}
 }
 
-// Address devuelve la dirección IP:puerto validada en el Paso 1.
 func (a *AccessConnection) Address() string {
 	return a.address
 }
 
-// Login autentica la conexión mediante el desafío SHA-256 y, si el servidor lo
-// acepta, configura el período de reporte y devuelve una ClientSession lista
-// para la terminal y las métricas.
 func (a *AccessConnection) Login(username, password string, reportPeriodSeconds int) (*ClientSession, error) {
 	if err := validateReportPeriod(reportPeriodSeconds); err != nil {
 		return nil, err
@@ -134,8 +113,6 @@ func (a *AccessConnection) Login(username, password string, reportPeriodSeconds 
 		if locked {
 			_ = a.Close()
 		} else {
-			// El servidor enviará un desafío nuevo después de la espera
-			// progresiva; el siguiente intento lo consumirá.
 			a.nonce = ""
 		}
 		return nil, authResultError(result)
@@ -143,9 +120,6 @@ func (a *AccessConnection) Login(username, password string, reportPeriodSeconds 
 	return a.finishLocked(reportPeriodSeconds)
 }
 
-// Register valida los datos en el cliente, envía el SHA-256 de la contraseña y
-// crea la cuenta en el servidor. Si el registro se acepta, la conexión queda
-// autenticada y se entrega la sesión de terminal/métricas.
 func (a *AccessConnection) Register(username, password, confirmation string, reportPeriodSeconds int) (*ClientSession, error) {
 	if err := validateReportPeriod(reportPeriodSeconds); err != nil {
 		return nil, err
@@ -192,9 +166,6 @@ func (a *AccessConnection) Register(username, password, confirmation string, rep
 	return a.finishLocked(reportPeriodSeconds)
 }
 
-// Close cierra la conexión de acceso. Es seguro llamarlo mientras otra
-// goroutine espera una respuesta: el cierre desbloquea la lectura sin necesidad
-// de adquirir mu.
 func (a *AccessConnection) Close() error {
 	a.connMu.Lock()
 	defer a.connMu.Unlock()
@@ -222,9 +193,6 @@ func (a *AccessConnection) prepareAuthLocked() error {
 	return a.ensureChallengeLocked()
 }
 
-// ensureChallengeLocked obtiene el desafío actual. Tras un intento fallido el
-// servidor envía uno nuevo cuando termina la espera progresiva, por lo que esta
-// lectura puede bloquearse unos segundos.
 func (a *AccessConnection) ensureChallengeLocked() error {
 	if a.nonce != "" {
 		return nil
@@ -250,8 +218,6 @@ func (a *AccessConnection) ensureChallengeLocked() error {
 			}
 			return authResultError(message)
 		case "register_result":
-			// Resultado rezagado de un intento de registro anterior; el
-			// siguiente mensaje es el desafío nuevo.
 			continue
 		default:
 			return fmt.Errorf("respuesta inesperada del servidor: %s", message.Type)
@@ -269,7 +235,6 @@ func (a *AccessConnection) readExpectedLocked(expected string) (Message, error) 
 		case expected:
 			return message, nil
 		case "auth_challenge":
-			// Desafío adelantado del siguiente intento; se reutiliza.
 			if message.Nonce != "" {
 				a.nonce = message.Nonce
 			}
@@ -315,7 +280,6 @@ func (a *AccessConnection) finishLocked(reportPeriodSeconds int) (*ClientSession
 		return nil, fmt.Errorf("limpiar tiempo límite de conexión: %w", err)
 	}
 
-	// La sesión pasa a ser dueña de conn: a partir de aquí Close ya no la cierra.
 	a.connMu.Lock()
 	if a.closed {
 		a.connMu.Unlock()

@@ -12,7 +12,6 @@ import (
 )
 
 const (
-	// rootFilesystem fija la medición a la partición raíz del servidor.
 	rootFilesystem = "/"
 	bytesPerGB     = 1024 * 1024 * 1024
 )
@@ -70,9 +69,6 @@ type diskUsage struct {
 	usedBytes  uint64
 }
 
-// readRootDiskUsage mide exclusivamente la partición raíz ("/") mediante
-// syscall.Statfs_t. No usa el directorio de trabajo ni rutas configurables,
-// para que el reporte siempre describa el mismo sistema de archivos.
 func readRootDiskUsage() (diskUsage, error) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(rootFilesystem, &stat); err != nil {

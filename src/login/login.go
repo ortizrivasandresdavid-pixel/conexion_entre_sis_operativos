@@ -24,9 +24,6 @@ func VerifyProof(users map[string]string, username, nonce, proof string) bool {
 	return VerifyProofHash(storedHash, username, nonce, proof)
 }
 
-// VerifyProofHash comprueba una prueba de autenticación contra un hash ya
-// almacenado. Se usa tanto en el login como al validar el registro de una
-// cuenta nueva, donde el hash llega en la propia solicitud.
 func VerifyProofHash(storedHash, username, nonce, proof string) bool {
 	if len(storedHash) != sha256.Size*2 || len(proof) != sha256.Size*2 {
 		return false

@@ -60,8 +60,6 @@ func newPrimaryButton(text string, tapped func()) *widget.Button {
 	return button
 }
 
-// newOutlineButton imita los botones delineados en verde del diseño: un marco
-// redondeado con el botón de baja importancia encima.
 func newOutlineButton(text string, tapped func()) fyne.CanvasObject {
 	frame := canvas.NewRectangle(color.Transparent)
 	frame.StrokeColor = theme.Color(theme.ColorNameInputBorder)
@@ -73,8 +71,6 @@ func newOutlineButton(text string, tapped func()) fyne.CanvasObject {
 	return container.NewStack(frame, button)
 }
 
-// newCard envolve el contenido en una tarjeta oscura de borde verde y tamaño
-// fijo, de modo que las pestañas del Paso 2 nunca cambien de tamaño.
 func newCard(content fyne.CanvasObject, size fyne.Size) fyne.CanvasObject {
 	background := canvas.NewRectangle(theme.Color(theme.ColorNameButton))
 	background.CornerRadius = 12
@@ -92,7 +88,6 @@ func fixedGap(width float32) fyne.CanvasObject {
 	return gap
 }
 
-// connectionView implementa el Paso 1: configuración y validación del socket.
 type connectionView struct {
 	g       *gui
 	root    fyne.CanvasObject
@@ -128,8 +123,6 @@ func newConnectionView(g *gui) *connectionView {
 	footer := monoLabel("Fyne Toolkit v2.8.2 - Paso 1 de 2")
 	footer.Importance = widget.LowImportance
 
-	// La cabecera queda arriba y el estado con el pie se ancla abajo; el hueco
-	// central mantiene la tarjeta proporcionada sin dejar un bloque vacío final.
 	content := container.NewBorder(
 		container.NewVBox(
 			titleLabel("Connection Configuration"),
@@ -194,8 +187,6 @@ func (v *connectionView) setError(err error) {
 	v.status.SetText(err.Error())
 }
 
-// tabButton es una pestaña con marco verde; la activa usa el relleno verde del
-// botón primario para distinguirse sin cambiar el tamaño del encabezado.
 type tabButton struct {
 	button *widget.Button
 	frame  *canvas.Rectangle
@@ -225,9 +216,6 @@ func (t *tabButton) setActive(active bool) {
 	t.frame.Refresh()
 }
 
-// accessView implementa el Paso 2. Ambas pestañas comparten la misma tarjeta de
-// tamaño fijo y el mismo cuerpo, por lo que cambiar de pestaña no redimensiona
-// la ventana ni mueve los botones inferiores.
 type accessView struct {
 	g           *gui
 	root        fyne.CanvasObject
@@ -268,7 +256,6 @@ func newAccessView(g *gui) *accessView {
 	dotWrap := container.NewGridWrap(fyne.NewSize(10, 10), dot)
 	connectedRow := container.NewHBox(view.connected, dotWrap, layout.NewSpacer())
 
-	// Pestaña Iniciar sesion.
 	view.loginUser = newMonoEntry("Usuario", false)
 	view.loginUser.SetText("admin")
 	view.loginPassword = newMonoEntry("Contraseña", true)
@@ -292,7 +279,6 @@ func newAccessView(g *gui) *accessView {
 	)
 	view.loginForm = container.NewBorder(nil, loginButtons, nil, nil, loginContent)
 
-	// Pestaña Registrarse, con el mismo cuerpo y la misma barra de botones.
 	view.registerUser = newMonoEntry("Nuevo usuario", false)
 	view.registerPassword = newMonoEntry("Contraseña", true)
 	view.registerConfirmation = newMonoEntry("Confirmar clave", true)
@@ -318,8 +304,6 @@ func newAccessView(g *gui) *accessView {
 	)
 	view.registerForm = container.NewBorder(nil, registerButtons, nil, nil, registerContent)
 
-	// El espaciador fija la altura del cuerpo; las dos pestañas se superponen y
-	// solo se muestra la activa, conservando el tamaño total de la tarjeta.
 	spacer := canvas.NewRectangle(color.Transparent)
 	spacer.SetMinSize(fyne.NewSize(1, accessBodyHeight))
 	view.registerForm.Hide()

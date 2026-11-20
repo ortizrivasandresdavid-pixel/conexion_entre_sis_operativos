@@ -69,7 +69,6 @@ func main() {
 	window.ShowAndRun()
 }
 
-// showConnection vuelve al Paso 1 cerrando cualquier socket previo.
 func (g *gui) showConnection(status string) {
 	g.closeTransport()
 	g.window.SetTitle("System Monitor Client - Step 1: Server Connection")
@@ -79,7 +78,6 @@ func (g *gui) showConnection(status string) {
 	g.connection.setIdle(status)
 }
 
-// showAccess pasa al Paso 2 conservando la conexión validada en el Paso 1.
 func (g *gui) showAccess(accessConn *sockets.AccessConnection, address string) {
 	g.accessConn = accessConn
 	g.address = address
@@ -173,7 +171,6 @@ func (g *gui) register(username, password, confirmation string) {
 	}()
 }
 
-// changeServer cierra la sesión o la conexión pendiente y reinicia el Paso 1.
 func (g *gui) changeServer() {
 	g.closeTransport()
 	g.showConnection("Waiting for connection")
@@ -210,8 +207,6 @@ func (g *gui) closeTransport() {
 	}
 }
 
-// mainView contiene la terminal remota, las métricas y el estado de la sesión
-// autenticada.
 type mainView struct {
 	g              *gui
 	root           fyne.CanvasObject

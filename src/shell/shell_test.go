@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// newTestSession crea una sesión real de shell o salta la prueba cuando el
-// entorno no permite ejecutar bash/sh (por ejemplo, Windows).
 func newTestSession(t *testing.T) *Session {
 	t.Helper()
 	if runtime.GOOS == "windows" {

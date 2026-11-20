@@ -23,9 +23,6 @@ type ClientSession struct {
 	nextID  atomic.Uint64
 }
 
-// ConnectClient conserva la API de una sola llamada: valida la conexión y
-// autentica al usuario antes de devolver la sesión. La GUI usa ConnectAccess y
-// AccessConnection.Login/Register para separar el Paso 1 del Paso 2.
 func ConnectClient(ctx context.Context, address string, reportPeriodSeconds int, username, password string) (*ClientSession, error) {
 	access, err := ConnectAccess(ctx, address)
 	if err != nil {

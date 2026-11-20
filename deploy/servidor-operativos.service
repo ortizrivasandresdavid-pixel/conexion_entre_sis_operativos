@@ -16,8 +16,6 @@ RestartSec=5s
 TimeoutStopSec=20s
 KillMode=mixed
 
-# systemd crea y da permisos a estos directorios antes de iniciar el proceso.
-# El log vive dentro de LogsDirectory para que la rotación funcione con systemd.
 StateDirectory=servidor-operativos
 StateDirectoryMode=0750
 LogsDirectory=proyecto-operativos
@@ -27,10 +25,6 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=servidor-operativos
 
-# El daemon necesita root para useradd y para cambiar UID/GID antes del exec de
-# cada shell. Los comandos heredan la identidad autenticada, no la del daemon.
-# ProtectSystem=full conserva /usr y /boot en solo lectura y deja que
-# useradd actualice /etc y sus archivos auxiliares de /var.
 UMask=0027
 NoNewPrivileges=false
 PrivateTmp=true
